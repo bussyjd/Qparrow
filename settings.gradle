@@ -1,4 +1,4 @@
-rootProject.name = 'sparrow'
+// Modified for Qparrow: independent fork identity.
+rootProject.name = 'qparrow'
 include 'drongo'
 include 'lark'
-

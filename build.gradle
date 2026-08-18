@@ -1,3 +1,4 @@
+// Modified for Qparrow: independent BTQ-only build and packaging identity.
 plugins {
     id 'application'
     id 'org.openjfx.javafxplugin' version '0.1.0'
@@ -19,8 +20,8 @@ if(System.getProperty("os.arch") == "aarch64") {
 }
 def headless = "true".equals(System.getProperty("java.awt.headless"))
 
-group = 'com.sparrowwallet'
-version = '2.5.4'
+group = 'com.bitcoinquantum'
+version = '0.1.0'
 
 repositories {
     mavenCentral()
@@ -159,7 +160,7 @@ application {
                                  "--add-reads=org.flywaydb.core=java.desktop"]
 
     if(os.macOsX) {
-        applicationDefaultJvmArgs += ["-Dprism.lcdtext=false", "-Xdock:name=Sparrow"]
+        applicationDefaultJvmArgs += ["-Dprism.lcdtext=false", "-Xdock:name=Qparrow"]
     }
     if(headless) {
         applicationDefaultJvmArgs += ["-Dglass.platform=Headless"]
@@ -189,20 +190,20 @@ jlink {
                '--no-header-files', '--no-man-pages', '--ignore-signing-information',
                '--exclude-files', '**.png',
                '--exclude-resources',
-                   'glob:/com.sparrowwallet.merged.module/META-INF/*,' +
+                   'glob:/com.bitcoinquantum.merged.module/META-INF/*,' +
                    'glob:/javafx.graphics/*.dylib,' +
                    'glob:/javafx.graphics/*.so,' +
                    'glob:/javafx.graphics/*.dll,' +
                    'glob:/com.sparrowwallet.drongo/native/**,' +
                    'glob:/com.sparrowwallet.sparrow/native/**,' +
-                   'glob:/com.sparrowwallet.merged.module/com/sun/jna/**/*.so,' +
-                   'glob:/com.sparrowwallet.merged.module/com/sun/jna/**/*.dylib,' +
-                   'glob:/com.sparrowwallet.merged.module/com/sun/jna/**/*.jnilib,' +
-                   'glob:/com.sparrowwallet.merged.module/com/sun/jna/**/*.dll,' +
-                   'glob:/com.sparrowwallet.merged.module/com/sun/jna/**/*.a,' +
-                   'glob:/com.sparrowwallet.merged.module/darwin-*/**,' +
-                   'glob:/com.sparrowwallet.merged.module/linux-*/**,' +
-                   'glob:/com.sparrowwallet.merged.module/win32-*/**,' +
+                   'glob:/com.bitcoinquantum.merged.module/com/sun/jna/**/*.so,' +
+                   'glob:/com.bitcoinquantum.merged.module/com/sun/jna/**/*.dylib,' +
+                   'glob:/com.bitcoinquantum.merged.module/com/sun/jna/**/*.jnilib,' +
+                   'glob:/com.bitcoinquantum.merged.module/com/sun/jna/**/*.dll,' +
+                   'glob:/com.bitcoinquantum.merged.module/com/sun/jna/**/*.a,' +
+                   'glob:/com.bitcoinquantum.merged.module/darwin-*/**,' +
+                   'glob:/com.bitcoinquantum.merged.module/linux-*/**,' +
+                   'glob:/com.bitcoinquantum.merged.module/win32-*/**,' +
                    'glob:/org.usb4java/org/usb4java/darwin-*/**,' +
                    'glob:/org.usb4java/org/usb4java/linux-*/**,' +
                    'glob:/org.usb4java/org/usb4java/win32-*/**,' +
@@ -212,11 +213,11 @@ jlink {
                    'glob:/io.github.doblon8.jzbar/native/**,' +
                    'glob:/io.github.doblon8.openpnp.capture/native/**']
     launcher {
-        name = 'sparrow'
+        name = 'qparrow'
         jvmArgs = ["--enable-native-access=com.sparrowwallet.drongo",
                    "--enable-native-access=com.sun.jna",
                    "--enable-native-access=javafx.graphics",
-                   "--enable-native-access=com.sparrowwallet.merged.module",
+                   "--enable-native-access=com.bitcoinquantum.merged.module",
                    "--enable-native-access=com.fazecast.jSerialComm",
                    "--enable-native-access=org.usb4java",
                    "--enable-native-access=io.github.doblon8.jzbar",
@@ -236,19 +237,19 @@ jlink {
                    "--add-opens=javafx.graphics/com.sun.javafx.application=com.sparrowwallet.sparrow",
                    "--add-opens=java.base/java.net=com.sparrowwallet.sparrow",
                    "--add-opens=java.smartcardio/sun.security.smartcardio=com.sparrowwallet.sparrow",
-                   "--add-reads=com.sparrowwallet.merged.module=java.desktop",
-                   "--add-reads=com.sparrowwallet.merged.module=java.sql",
-                   "--add-reads=com.sparrowwallet.merged.module=com.sparrowwallet.sparrow",
-                   "--add-reads=com.sparrowwallet.merged.module=ch.qos.logback.classic",
-                   "--add-reads=com.sparrowwallet.merged.module=org.slf4j",
-                   "--add-reads=com.sparrowwallet.merged.module=com.fasterxml.jackson.databind",
-                   "--add-reads=com.sparrowwallet.merged.module=com.fasterxml.jackson.annotation",
-                   "--add-reads=com.sparrowwallet.merged.module=com.fasterxml.jackson.core",
-                   "--add-reads=com.sparrowwallet.merged.module=co.nstant.in.cbor",
-                   "--add-reads=com.sparrowwallet.merged.module=org.bouncycastle.pg",
-                   "--add-reads=com.sparrowwallet.merged.module=org.bouncycastle.provider",
-                   "--add-reads=com.sparrowwallet.merged.module=kotlin.stdlib",
-                   "--add-reads=com.sparrowwallet.merged.module=org.reactfx.reactfx",
+                   "--add-reads=com.bitcoinquantum.merged.module=java.desktop",
+                   "--add-reads=com.bitcoinquantum.merged.module=java.sql",
+                   "--add-reads=com.bitcoinquantum.merged.module=com.sparrowwallet.sparrow",
+                   "--add-reads=com.bitcoinquantum.merged.module=ch.qos.logback.classic",
+                   "--add-reads=com.bitcoinquantum.merged.module=org.slf4j",
+                   "--add-reads=com.bitcoinquantum.merged.module=com.fasterxml.jackson.databind",
+                   "--add-reads=com.bitcoinquantum.merged.module=com.fasterxml.jackson.annotation",
+                   "--add-reads=com.bitcoinquantum.merged.module=com.fasterxml.jackson.core",
+                   "--add-reads=com.bitcoinquantum.merged.module=co.nstant.in.cbor",
+                   "--add-reads=com.bitcoinquantum.merged.module=org.bouncycastle.pg",
+                   "--add-reads=com.bitcoinquantum.merged.module=org.bouncycastle.provider",
+                   "--add-reads=com.bitcoinquantum.merged.module=kotlin.stdlib",
+                   "--add-reads=com.bitcoinquantum.merged.module=org.reactfx.reactfx",
                    "--add-reads=kotlin.stdlib=kotlinx.coroutines.core",
                    "--add-reads=org.flywaydb.core=java.desktop"]
 
@@ -256,7 +257,7 @@ jlink {
             jvmArgs.addAll(["-Djavax.accessibility.assistive_technologies", "-Djavax.accessibility.screen_magnifier_present=false"])
         }
         if(os.macOsX) {
-            jvmArgs.addAll(["-Dprism.lcdtext=false", "--add-opens=javafx.graphics/com.sun.glass.ui.mac=com.sparrowwallet.merged.module"])
+            jvmArgs.addAll(["-Dprism.lcdtext=false", "--add-opens=javafx.graphics/com.sun.glass.ui.mac=com.bitcoinquantum.merged.module"])
         }
         if(headless) {
             jvmArgs.addAll(["-Dglass.platform=Headless"])
@@ -264,31 +265,28 @@ jlink {
     }
     addExtraDependencies("javafx")
     jpackage {
-        imageName = "Sparrow"
-        installerName = "Sparrow"
-        appVersion = "${version}"
+        imageName = "Qparrow"
+        installerName = "Qparrow"
+        // Apple's jpackage bundler rejects development versions whose first component is zero.
+        appVersion = os.macOsX ? "1.0.0" : "${version}"
         skipInstaller = os.macOsX || properties.skipInstallers
         imageOptions = []
-        installerOptions = ['--file-associations', 'src/main/deploy/psbt.properties', '--file-associations', 'src/main/deploy/txn.properties', '--file-associations', 'src/main/deploy/asc.properties', '--license-file', 'LICENSE']
+        installerOptions = ['--license-file', 'LICENSE']
         if(os.windows) {
-            installerOptions.addAll(['--win-per-user-install', '--win-menu', '--win-menu-group', 'Sparrow', '--win-shortcut', '--resource-dir', 'src/main/deploy/package/windows/'])
-            imageOptions.addAll(['--icon', 'src/main/deploy/package/windows/sparrow.ico'])
+            installerOptions.addAll(['--win-per-user-install', '--win-menu', '--win-menu-group', 'Qparrow', '--win-shortcut'])
             installerType = "msi"
         }
         if(os.linux) {
             if(headless) {
-                installerName = "sparrowserver"
+                installerName = "qparrowserver"
                 installerOptions = ['--license-file', 'LICENSE']
             } else {
-                installerName = "sparrowwallet"
-                installerOptions.addAll(['--linux-shortcut', '--linux-menu-group', 'Sparrow'])
+                installerName = "qparrowwallet"
+                installerOptions.addAll(['--linux-shortcut', '--linux-menu-group', 'Qparrow'])
             }
-            installerOptions.addAll(['--resource-dir', layout.buildDirectory.dir('deploy/package').get().asFile.toString(), '--linux-app-category', 'utils', '--linux-app-release', '1', '--linux-rpm-license-type', 'ASL 2.0', '--linux-deb-maintainer', 'mail@sparrowwallet.com'])
-            imageOptions.addAll(['--icon', 'src/main/deploy/package/linux/Sparrow.png', '--resource-dir', 'src/main/deploy/package/linux/'])
+            installerOptions.addAll(['--resource-dir', layout.buildDirectory.dir('deploy/package').get().asFile.toString(), '--linux-app-category', 'utils', '--linux-app-release', '1', '--linux-rpm-license-type', 'ASL 2.0'])
         }
         if(os.macOsX) {
-            installerOptions.addAll(['--mac-sign', '--mac-signing-key-user-name', 'Craig Raw (UPLVMSK9D7)'])
-            imageOptions.addAll(['--icon', 'src/main/deploy/package/macos/sparrow.icns', '--resource-dir', 'src/main/deploy/package/macos/'])
             installerType = "dmg"
         }
     }
@@ -301,10 +299,6 @@ jlink {
 
 if(os.linux) {
     tasks.jlink.finalizedBy('addUserWritePermission', 'copyUdevRules', 'extractNativeLibraries')
-    tasks.jpackageImage.finalizedBy('prepareResourceDir')
-    if(!headless) {
-        tasks.jpackage.dependsOn('copyMimeInfo')
-    }
 } else {
     tasks.jlink.finalizedBy('addUserWritePermission', 'extractNativeLibraries')
 }
@@ -332,7 +326,7 @@ tasks.register('prepareResourceDir', Copy) {
         if(file.name.equals('control') || file.name.endsWith('.spec')) {
             filter { line ->
                 if(line.contains('${size}')) {
-                    line = line.replace('${size}', getDirectorySize(layout.buildDirectory.dir('jpackage/Sparrow').get().asFile))
+                    line = line.replace('${size}', getDirectorySize(layout.buildDirectory.dir('jpackage/Qparrow').get().asFile))
                 }
                 return line.replace('${version}', "${version}").replace('${arch}', osArch == 'aarch64' ? 'arm64' : 'amd64')
             }
@@ -343,7 +337,7 @@ tasks.register('prepareResourceDir', Copy) {
 tasks.register('copyMimeInfo', Copy) {
     mustRunAfter tasks.jpackageImage
     from('src/main/deploy/package/linux')
-    into(layout.buildDirectory.dir('jpackage/Sparrow/lib'))
+    into(layout.buildDirectory.dir('jpackage/Qparrow/lib'))
     include('sparrowwallet-Sparrow-MimeInfo.xml')
 }
 
@@ -362,26 +356,26 @@ static def getDirectorySize(File directory) {
 }
 
 tasks.register('removeGroupWritePermission', Exec) {
-    commandLine 'chmod', '-R', 'g-w', "$buildDir/jpackage/Sparrow"
+    commandLine 'chmod', '-R', 'g-w', "$buildDir/jpackage/Qparrow"
 }
 
 tasks.register('packageZipDistribution', Zip) {
-    archiveFileName = "Sparrow-${version}.zip"
+    archiveFileName = "Qparrow-${version}.zip"
     destinationDirectory = file("$buildDir/jpackage")
     preserveFileTimestamps = os.macOsX
     from("$buildDir/jpackage/") {
-        include "Sparrow/**"
-        include "Sparrow.app/**"
+        include "Qparrow/**"
+        include "Qparrow.app/**"
     }
 }
 
 tasks.register('packageTarDistribution', Tar) {
     dependsOn removeGroupWritePermission
-    archiveFileName = "sparrow${headless ? 'server': 'wallet'}-${version}-${releaseArch}.tar.gz"
+    archiveFileName = "qparrow${headless ? 'server': 'wallet'}-${version}-${releaseArch}.tar.gz"
     destinationDirectory = file("$buildDir/jpackage")
     compression = Compression.GZIP
     from("$buildDir/jpackage/") {
-        include "Sparrow/**"
+        include "Qparrow/**"
     }
 }
 

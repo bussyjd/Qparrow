@@ -1,3 +1,4 @@
+// Modified for Qparrow: BTQ-only launcher options and naming.
 package com.sparrowwallet.sparrow;
 
 import com.beust.jcommander.Parameter;
@@ -8,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class Args {
-    @Parameter(names = { "--dir", "-d" }, description = "Path to Sparrow home folder")
+    @Parameter(names = { "--dir", "-d" }, description = "Path to Qparrow home folder")
     public String dir;
 
     @Parameter(names = { "--network", "-n" }, description = "Network to use")
@@ -17,7 +18,7 @@ public class Args {
     @Parameter(names = { "--level", "-l" }, description = "Set log level")
     public Level level;
 
-    @Parameter(names = { "--terminal", "-t" }, description = "Terminal mode", arity = 0)
+    @Parameter(names = { "--terminal", "-t" }, description = "Unsupported in the node-backed Qparrow milestone", arity = 0)
     public boolean terminal;
 
     @Parameter(names = { "--version", "-v" }, description = "Show version", arity = 0)
