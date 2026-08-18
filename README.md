@@ -15,7 +15,7 @@ This repository is an early development milestone. Do not use it with valuable f
 - Qparrow stores only public node connection metadata. RPC passwords and wallet secret material are not persisted.
 - Inherited Sparrow wallet files, terminal wallet mode, hardware signing, Electrum, Bitcoin key derivation, and offline signing are not reachable from the Qparrow launcher.
 
-See [the Sparrow suitability and license assessment](docs/SPARROW_ASSESSMENT.md), [the architecture and threat boundary](docs/QPARROW_ARCHITECTURE.md), and [the complete wallet reference map](docs/BTQ_WALLET_REFERENCE_MAP.md) before changing wallet code.
+See [the Sparrow suitability and license assessment](docs/SPARROW_ASSESSMENT.md), [the architecture and threat boundary](docs/QPARROW_ARCHITECTURE.md), [the complete wallet reference map](docs/BTQ_WALLET_REFERENCE_MAP.md), and [the verified test matrix](docs/VERIFICATION.md) before changing wallet code.
 
 ## Requirements
 

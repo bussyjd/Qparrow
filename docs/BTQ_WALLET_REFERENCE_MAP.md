@@ -1,6 +1,6 @@
 # BTQ wallet reference map
 
-This map is the required starting point for Qparrow wallet changes. It is anchored to BTQ Core `v0.4.4-testnet` at `e2d19e06` and its exact Bitcoin Core 26.0 ancestor `44d8b13`. Revalidate the paths and behavior whenever the BTQ Core pin changes.
+This map is the required starting point for Qparrow wallet changes. It is anchored to BTQ Core `v0.4.4-testnet` production code at `e2d19e06` and its exact Bitcoin Core 26.0 ancestor `44d8b13`. Test-only commit `5a7edd6b2` corrects one stale expected error string without changing production behavior. Revalidate the paths and behavior whenever the BTQ Core pin changes.
 
 ## Protocol facts that change wallet assumptions
 
