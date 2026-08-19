@@ -174,8 +174,10 @@ public final class BtqSeedVault {
         byte[] key = deriveKey(password, parsed.salt);
         byte[] ciphertext = Arrays.copyOfRange(encoded, HEADER_BYTES, encoded.length);
         byte[] masterSecret;
+        byte[] authenticatedEncoding = null;
         try {
             masterSecret = crypt(Cipher.DECRYPT_MODE, key, parsed.nonce, header, ciphertext);
+            authenticatedEncoding = encoded.clone();
         } catch(AEADBadTagException e) {
             throw new IOException("custody vault authentication failed");
         } catch(GeneralSecurityException e) {
@@ -189,9 +191,10 @@ public final class BtqSeedVault {
         }
         if(masterSecret.length != BtqCustodySpec.MASTER_SECRET_BYTES) {
             Arrays.fill(masterSecret, (byte)0);
+            Arrays.fill(authenticatedEncoding, (byte)0);
             throw new IOException("invalid custody vault payload");
         }
-        return new UnlockedSeed(expectedNetwork, masterSecret);
+        return new UnlockedSeed(expectedNetwork, masterSecret, authenticatedEncoding);
     }
 
     private static byte[] header(BtqNetwork network, byte[] salt, byte[] nonce) {
@@ -338,10 +341,12 @@ public final class BtqSeedVault {
     public static final class UnlockedSeed implements AutoCloseable {
         private final BtqNetwork network;
         private byte[] masterSecret;
+        private byte[] authenticatedEncoding;
 
-        private UnlockedSeed(BtqNetwork network, byte[] masterSecret) {
+        private UnlockedSeed(BtqNetwork network, byte[] masterSecret, byte[] authenticatedEncoding) {
             this.network = network;
             this.masterSecret = masterSecret;
+            this.authenticatedEncoding = authenticatedEncoding;
         }
 
         public BtqNetwork network() {
@@ -355,6 +360,14 @@ public final class BtqSeedVault {
             return masterSecret.clone();
         }
 
+        /** Exact encrypted bytes authenticated by this unlock operation. */
+        public synchronized byte[] copyAuthenticatedEncoding() {
+            if(authenticatedEncoding == null) {
+                throw new IllegalStateException("custody vault is locked");
+            }
+            return authenticatedEncoding.clone();
+        }
+
         public synchronized boolean isClosed() {
             return masterSecret == null;
         }
@@ -364,6 +377,10 @@ public final class BtqSeedVault {
             if(masterSecret != null) {
                 Arrays.fill(masterSecret, (byte)0);
                 masterSecret = null;
+            }
+            if(authenticatedEncoding != null) {
+                Arrays.fill(authenticatedEncoding, (byte)0);
+                authenticatedEncoding = null;
             }
         }
     }

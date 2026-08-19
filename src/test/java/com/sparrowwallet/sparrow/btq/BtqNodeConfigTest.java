@@ -66,6 +66,17 @@ class BtqNodeConfigTest {
     }
 
     @Test
+    void basicCredentialsCannotBeReusedAfterClose() throws Exception {
+        char[] password = "rpc-secret".toCharArray();
+        BtqRpcCredentials credentials = BtqRpcCredentials.basic("user", password);
+        assertTrue(credentials.authorizationHeader().startsWith("Basic "));
+
+        credentials.close();
+
+        assertThrows(java.io.IOException.class, credentials::authorizationHeader);
+    }
+
+    @Test
     void rpcClientRejectsMismatchedResponseIdsAndWrongResultTypes() {
         BtqNodeConfig config = config("http://127.0.0.1:18443/", "wallet");
         BtqRpcTransport mismatched = (endpoint, authorization, timeout, request) -> {

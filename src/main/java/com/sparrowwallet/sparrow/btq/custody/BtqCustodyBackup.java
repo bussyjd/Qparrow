@@ -4,6 +4,9 @@ package com.sparrowwallet.sparrow.btq.custody;
 
 import com.sparrowwallet.sparrow.btq.BtqNetwork;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -14,13 +17,16 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.security.MessageDigest;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Set;
 
 /** Strict container for one encrypted vault and its authenticated address counters. */
 public final class BtqCustodyBackup {
+    private static final Logger LOG = LoggerFactory.getLogger(BtqCustodyBackup.class);
     private static final Object PROCESS_LOCK = new Object();
     private static final byte[] MAGIC = {'Q', 'P', 'B', 'T', 'Q', 'B', 'A', 'K'};
     private static final int VAULT_BYTES = 89;
@@ -29,26 +35,41 @@ public final class BtqCustodyBackup {
     private static final int FILE_BYTES = HEADER_BYTES + VAULT_BYTES + STATE_BYTES;
     private static final Set<PosixFilePermission> OWNER_ONLY = EnumSet.of(
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+    private static final Set<PosixFilePermission> GROUP_OR_OTHER = EnumSet.of(
+            PosixFilePermission.GROUP_READ, PosixFilePermission.GROUP_WRITE, PosixFilePermission.GROUP_EXECUTE,
+            PosixFilePermission.OTHERS_READ, PosixFilePermission.OTHERS_WRITE, PosixFilePermission.OTHERS_EXECUTE);
 
     private BtqCustodyBackup() {
     }
 
-    public static void write(Path vault, Path state, Path target, BtqNetwork network,
-                             byte[] masterSecret) throws IOException {
+    static void write(Path vault, byte[] authenticatedVault, Path state, Path target, BtqNetwork network,
+                      byte[] masterSecret) throws IOException {
         Objects.requireNonNull(network, "network");
         BtqCustodySpec.requireLength(masterSecret, BtqCustodySpec.MASTER_SECRET_BYTES, "master secret");
-        byte[] vaultBytes = readExact(vault, VAULT_BYTES, "custody vault");
-        byte[] stateBytes = readExact(state, STATE_BYTES, "wallet state");
+        BtqCustodySpec.requireLength(authenticatedVault, VAULT_BYTES, "authenticated custody vault");
+        byte[] vaultBytes = authenticatedVault.clone();
+        byte[] stateBytes = null;
         try {
-            BtqWalletStateStore.inspect(state, masterSecret, network);
+            byte[] currentVault = readExact(vault, VAULT_BYTES, "custody vault");
+            try {
+                if(!MessageDigest.isEqual(vaultBytes, currentVault)) {
+                    throw new IOException("custody vault changed after this wallet session was unlocked");
+                }
+            } finally {
+                Arrays.fill(currentVault, (byte)0);
+            }
+            stateBytes = BtqWalletStateStore.authenticatedSnapshot(state, masterSecret, network);
             byte[] encoded = ByteBuffer.allocate(FILE_BYTES).put(MAGIC).putInt(BtqCustodySpec.VERSION)
                     .put(networkId(network)).putInt(vaultBytes.length).putInt(stateBytes.length)
                     .put(vaultBytes).put(stateBytes).array();
-            writeNew(target, encoded, ".backup.lock");
-            Arrays.fill(encoded, (byte)0);
+            try {
+                writeNew(target, encoded, ".backup.lock");
+            } finally {
+                Arrays.fill(encoded, (byte)0);
+            }
         } finally {
             Arrays.fill(vaultBytes, (byte)0);
-            Arrays.fill(stateBytes, (byte)0);
+            if(stateBytes != null) Arrays.fill(stateBytes, (byte)0);
         }
     }
 
@@ -56,7 +77,7 @@ public final class BtqCustodyBackup {
     public static void restore(Path backup, Path targetVault, Path targetState, BtqNetwork expectedNetwork,
                                char[] password) throws IOException {
         Objects.requireNonNull(expectedNetwork, "expectedNetwork");
-        byte[] encoded = readExact(backup, FILE_BYTES, "custody backup");
+        byte[] encoded = readExact(backup, FILE_BYTES, "custody backup", false);
         byte[] vaultBytes = null;
         byte[] stateBytes = null;
         Path vaultTemp = null;
@@ -160,9 +181,33 @@ public final class BtqCustodyBackup {
     }
 
     private static byte[] readExact(Path source, int expectedLength, String name) throws IOException {
+        return readExact(source, expectedLength, name, true);
+    }
+
+    /**
+     * Reads a fixed-length custody file. Files that Qparrow itself keeps owner-only (the vault) must still
+     * be owner-only when read back. The {@code .qpbackup} container is ciphertext plus a MAC and is meant to
+     * be copied off the machine, so a wider mode is accepted with a warning instead of refused; symlinks and
+     * non-regular files stay refused either way, and the restored vault/state are installed owner-only.
+     */
+    private static byte[] readExact(Path source, int expectedLength, String name, boolean requireOwnerOnly)
+            throws IOException {
         Path absolute = Objects.requireNonNull(source, name).toAbsolutePath().normalize();
         if(!Files.isRegularFile(absolute, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException(name + " is not a regular file");
+        }
+        try {
+            Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(absolute, LinkOption.NOFOLLOW_LINKS);
+            if(requireOwnerOnly) {
+                if(!permissions.equals(OWNER_ONLY)) {
+                    throw new IOException(name + " permissions are not owner-only");
+                }
+            } else if(!Collections.disjoint(permissions, GROUP_OR_OTHER)) {
+                LOG.warn("{} {} is readable or writable beyond its owner (mode {}); the container is encrypted, "
+                        + "but restrict it to owner-only", name, absolute, PosixFilePermissions.toString(permissions));
+            }
+        } catch(UnsupportedOperationException ignored) {
+            // ACLs are platform-specific; no POSIX mode is available to validate.
         }
         byte[] bytes = Files.readAllBytes(absolute);
         if(bytes.length != expectedLength) {
@@ -214,12 +259,23 @@ public final class BtqCustodyBackup {
         }
     }
 
+    /** Stable wire ids, identical to the ones {@link BtqSeedVault} and {@link BtqWalletStateStore} encode. */
     private static byte networkId(BtqNetwork network) {
-        return (byte)network.ordinal();
+        return switch(network) {
+            case MAINNET -> 0;
+            case TESTNET -> 1;
+            case SIGNET -> 2;
+            case REGTEST -> 3;
+        };
     }
 
     private static BtqNetwork networkFromId(byte id) throws IOException {
-        if(id < 0 || id >= BtqNetwork.values().length) throw new IOException("unknown backup network id");
-        return BtqNetwork.values()[id];
+        return switch(id) {
+            case 0 -> BtqNetwork.MAINNET;
+            case 1 -> BtqNetwork.TESTNET;
+            case 2 -> BtqNetwork.SIGNET;
+            case 3 -> BtqNetwork.REGTEST;
+            default -> throw new IOException("unknown backup network id");
+        };
     }
 }

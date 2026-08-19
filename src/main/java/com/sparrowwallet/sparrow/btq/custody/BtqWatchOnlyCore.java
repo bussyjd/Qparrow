@@ -19,7 +19,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /** Public-only BTQ Core boundary for a Qparrow-custody wallet. */
-public final class BtqWatchOnlyCore {
+public final class BtqWatchOnlyCore implements AutoCloseable {
     /** 41-byte base input at 16x plus the maximum single-key P2MR witness. */
     public static final int SINGLE_KEY_P2MR_INPUT_WEIGHT = 4402;
     private static final long MAX_MONEY_SATS = 21_000_000L * 100_000_000L;
@@ -57,13 +57,54 @@ public final class BtqWatchOnlyCore {
         if(!subversion.toLowerCase(java.util.Locale.ROOT).contains("btq")) {
             throw new IllegalStateException("RPC endpoint does not identify as BTQ Core");
         }
+        String genesisHash = nodeRpc.callString("getblockhash", 0);
+        if(!reportedNetwork.genesisHash().equalsIgnoreCase(genesisHash)) {
+            throw new IllegalStateException("RPC endpoint genesis block does not match the selected BTQ network");
+        }
+        requireChangeRegistrationSupport();
+        if(reportedNetwork == BtqNetwork.SIGNET) {
+            JsonObject miningInfo = nodeRpc.callObject("getmininginfo");
+            if(!miningInfo.has("signet_challenge") || miningInfo.get("signet_challenge").isJsonNull()) {
+                throw new IllegalStateException("BTQ Core build lacks getmininginfo.signet_challenge"
+                        + " \u2014 requires btq-core f36e0b28e or later");
+            }
+            String challenge = requiredString(miningInfo, "signet_challenge", "getmininginfo");
+            if(!reportedNetwork.signetChallenge().equalsIgnoreCase(challenge)) {
+                throw new IllegalStateException("custom BTQ signet challenges are not supported by this custody wallet");
+            }
+        }
         int blocks = requiredInt(blockchainInfo, "blocks", "getblockchaininfo");
         int headers = requiredInt(blockchainInfo, "headers", "getblockchaininfo");
         if(blocks < 0 || headers < blocks) {
             throw new IllegalStateException("BTQ Core returned invalid synchronization heights");
         }
-        return new NodeStatus(subversion, reportedNetwork, blocks, headers,
-                optionalBoolean(blockchainInfo, "initialblockdownload", true));
+        boolean pruned = optionalBoolean(blockchainInfo, "pruned", false);
+        int pruneHeight = pruned ? optionalInt(blockchainInfo, "pruneheight", -1) : -1;
+        if(pruned && pruneHeight < 0) {
+            throw new IllegalStateException("BTQ Core returned invalid pruning state");
+        }
+        return new NodeStatus(subversion, reportedNetwork, genesisHash.toLowerCase(java.util.Locale.ROOT),
+                blocks, headers, optionalBoolean(blockchainInfo, "initialblockdownload", true),
+                pruned, pruneHeight);
+    }
+
+    /**
+     * Every Qparrow spend mints change first, and change registration needs the third
+     * {@code internal} parameter of {@code getnewp2mraddress}. Older builds declare two parameters and
+     * fail the first registration with the raw RPC help text, so probe the declared arity once here.
+     */
+    private void requireChangeRegistrationSupport() {
+        final String help;
+        try {
+            help = nodeRpc.callString("help", "getnewp2mraddress");
+        } catch(RuntimeException e) {
+            throw new IllegalStateException("BTQ Core build lacks getnewp2mraddress(internal)"
+                    + " \u2014 requires btq-core e3da3f784 or later", e);
+        }
+        if(!help.contains("internal")) {
+            throw new IllegalStateException("BTQ Core build lacks getnewp2mraddress(internal)"
+                    + " \u2014 requires btq-core e3da3f784 or later");
+        }
     }
 
     /** Create or load a descriptor wallet that is structurally unable to hold private keys. */
@@ -117,9 +158,9 @@ public final class BtqWatchOnlyCore {
         return registerAddress(localAddress, label, "now");
     }
 
-    /** Recovery registration uses genesis so Core can rediscover historical transactions. */
+    /** Recovery registers without an implicit scan; the caller performs one explicit historical rescan. */
     public RegisteredAddress registerHistoricalAddress(BtqP2mrKeyPath.Address localAddress, String label) {
-        return registerAddress(localAddress, label, 0);
+        return registerAddress(localAddress, label, "now");
     }
 
     private RegisteredAddress registerAddress(BtqP2mrKeyPath.Address localAddress, String label,
@@ -143,7 +184,8 @@ public final class BtqWatchOnlyCore {
         leaf.addProperty("script", HEX.formatHex(localAddress.leafScript()));
         JsonArray tree = new JsonArray();
         tree.add(leaf);
-        JsonObject created = walletRpc.callObject("getnewp2mraddress", tree, label == null ? "" : label);
+        boolean internal = localAddress.chain() == BtqCustodySpec.Chain.CHANGE;
+        JsonObject created = walletRpc.callObject("getnewp2mraddress", tree, label == null ? "" : label, internal);
 
         RegisteredAddress registered = new RegisteredAddress(
                 requiredString(created, "p2mr_id", "getnewp2mraddress"),
@@ -201,6 +243,7 @@ public final class BtqWatchOnlyCore {
         if(!optionalBoolean(info, "ismine", false)
                 || !optionalBoolean(info, "solvable", false)
                 || !optionalBoolean(info, "isdilithium", false)
+                || requiredBoolean(info, "ischange", "getaddressinfo") != internal
                 || optionalInt(info, "witness_version", -1) != 2
                 || !localScript.equalsIgnoreCase(requiredString(info, "scriptPubKey", "getaddressinfo"))) {
             throw new IllegalStateException("BTQ Core did not classify the Qparrow address as watch-only P2MR");
@@ -210,13 +253,22 @@ public final class BtqWatchOnlyCore {
 
     public RescanResult rescanFromGenesis() {
         requirePrivateKeysDisabled();
-        JsonObject result = walletRpc.callObject("rescanblockchain", 0);
-        int start = requiredInt(result, "start_height", "rescanblockchain");
-        int stop = requiredInt(result, "stop_height", "rescanblockchain");
-        if(start != 0 || stop < start) {
-            throw new IllegalStateException("BTQ Core returned invalid rescan heights");
+        for(int attempt = 0; attempt < 3; attempt++) {
+            JsonObject result = walletRpc.callObject("rescanblockchain", 0);
+            int start = requiredInt(result, "start_height", "rescanblockchain");
+            if(start != 0) {
+                throw new IllegalStateException("BTQ Core returned an invalid rescan start height");
+            }
+            if(!result.has("stop_height") || result.get("stop_height").isJsonNull()) {
+                continue;
+            }
+            int stop = requiredInt(result, "stop_height", "rescanblockchain");
+            if(stop < start) {
+                throw new IllegalStateException("BTQ Core returned invalid rescan heights");
+            }
+            return new RescanResult(start, stop);
         }
-        return new RescanResult(start, stop);
+        throw new IllegalStateException("BTQ Core could not complete a stable genesis rescan after three attempts");
     }
 
     public List<WatchedUtxo> listUtxos(int minimumConfirmations) {
@@ -257,9 +309,10 @@ public final class BtqWatchOnlyCore {
             } catch(Exception e) {
                 throw new IllegalStateException("BTQ Core returned an invalid UTXO amount", e);
             }
-            if(amountSats <= 0 || amountSats > MAX_MONEY_SATS) {
+            if(amountSats < 0 || amountSats > MAX_MONEY_SATS) {
                 throw new IllegalStateException("BTQ Core returned an out-of-range UTXO amount");
             }
+            if(amountSats == 0) continue;
             validated.add(new WatchedUtxo(txid, vout, address, script.toLowerCase(java.util.Locale.ROOT),
                     amountSats, confirmations));
         }
@@ -325,6 +378,8 @@ public final class BtqWatchOnlyCore {
         options.addProperty("include_watching", true);
         options.addProperty("change_address", changeAddress.address());
         options.addProperty("fee_rate", feeRateSatsPerVbyte);
+        // Ask for BIP125 signalling explicitly so it does not depend on the node's -walletrbf setting.
+        options.addProperty("replaceable", true);
         JsonObject funded = walletRpc.callObject("walletcreatefundedpsbt", inputs, outputs, 0, options, false);
         String psbt = requiredString(funded, "psbt", "walletcreatefundedpsbt");
         if(psbt.isBlank()) throw new IllegalStateException("BTQ Core returned an empty PSBT");
@@ -341,24 +396,16 @@ public final class BtqWatchOnlyCore {
         return new FundedPsbt(psbt, feeSats, changePosition);
     }
 
-    /** Finalize only a PSBT already validated and signed by {@link BtqPsbtSigner}. */
-    public FinalizedTransaction finalizePsbt(BtqPsbtSigner.SignedPsbt signedPsbt) {
+    /** Locally finalize a signed PSBT, then use Core only as the default-policy oracle. */
+    public FinalizedTransaction finalizeSignedPsbt(BtqPsbtSigner.SignedPsbt signedPsbt) {
         Objects.requireNonNull(signedPsbt, "signedPsbt");
-        JsonObject finalized = nodeRpc.callObject("finalizepsbt", signedPsbt.base64(), true);
-        if(!optionalBoolean(finalized, "complete", false)) {
-            throw new IllegalStateException("BTQ Core could not finalize the Qparrow P2MR signature");
-        }
-        String hex = requiredString(finalized, "hex", "finalizepsbt");
-        final String localTxid;
+        final BtqPsbtSigner.FinalizedTransaction local;
         try {
-            localTxid = BtqPsbtSigner.finalizedTransactionId(hex);
+            local = BtqPsbtSigner.finalizeTransaction(signedPsbt);
         } catch(IllegalArgumentException e) {
-            throw new IllegalStateException("BTQ Core returned invalid finalized transaction hex", e);
+            throw new IllegalStateException("Qparrow could not locally finalize the signed P2MR transaction", e);
         }
-        if(!localTxid.equals(signedPsbt.expectedTxid())) {
-            throw new IllegalStateException("BTQ Core finalized a transaction other than the locally signed proposal");
-        }
-        JsonArray acceptance = nodeRpc.callArray("testmempoolaccept", List.of(hex));
+        JsonArray acceptance = nodeRpc.callArray("testmempoolaccept", List.of(local.hex()));
         if(acceptance.size() != 1) {
             throw new IllegalStateException("BTQ Core returned invalid mempool acceptance data");
         }
@@ -371,10 +418,14 @@ public final class BtqWatchOnlyCore {
         if(!txid.matches("[0-9a-fA-F]{64}")) {
             throw new IllegalStateException("BTQ Core returned an invalid transaction id");
         }
-        if(!txid.equalsIgnoreCase(localTxid)) {
+        if(!txid.equalsIgnoreCase(local.txid())) {
             throw new IllegalStateException("BTQ Core returned a transaction id inconsistent with finalized bytes");
         }
-        return new FinalizedTransaction(hex, localTxid);
+        String wtxid = requiredString(result, "wtxid", "testmempoolaccept");
+        if(!wtxid.matches("[0-9a-fA-F]{64}") || !wtxid.equalsIgnoreCase(local.wtxid())) {
+            throw new IllegalStateException("BTQ Core returned a witness transaction id inconsistent with finalized bytes");
+        }
+        return new FinalizedTransaction(local.hex(), local.txid(), local.wtxid());
     }
 
     /** Broadcast only a transaction already finalized and dry-run by this boundary. */
@@ -396,6 +447,11 @@ public final class BtqWatchOnlyCore {
         }
     }
 
+    @Override
+    public void close() {
+        config.close();
+    }
+
     private static String requiredString(JsonObject object, String field, String method) {
         if(!object.has(field) || object.get(field).isJsonNull() || !object.get(field).isJsonPrimitive()) {
             throw new IllegalStateException(method + " did not return " + field);
@@ -405,6 +461,14 @@ public final class BtqWatchOnlyCore {
 
     private static boolean optionalBoolean(JsonObject object, String field, boolean fallback) {
         return object.has(field) && !object.get(field).isJsonNull() ? object.get(field).getAsBoolean() : fallback;
+    }
+
+    private static boolean requiredBoolean(JsonObject object, String field, String method) {
+        if(!object.has(field) || object.get(field).isJsonNull() || !object.get(field).isJsonPrimitive()
+                || !object.get(field).getAsJsonPrimitive().isBoolean()) {
+            throw new IllegalStateException(method + " did not return boolean " + field);
+        }
+        return object.get(field).getAsBoolean();
     }
 
     private static int optionalInt(JsonObject object, String field, int fallback) {
@@ -422,8 +486,9 @@ public final class BtqWatchOnlyCore {
         }
     }
 
-    public record NodeStatus(String subversion, BtqNetwork network, int blocks, int headers,
-                             boolean initialBlockDownload) {
+    public record NodeStatus(String subversion, BtqNetwork network, String genesisHash,
+                             int blocks, int headers, boolean initialBlockDownload,
+                             boolean pruned, int pruneHeight) {
     }
 
     public record WalletStatus(String name, boolean descriptors, boolean privateKeysEnabled, boolean blank) {
@@ -460,7 +525,16 @@ public final class BtqWatchOnlyCore {
     public record FundedPsbt(String base64, long feeSats, int changePosition) {
     }
 
-    public record FinalizedTransaction(String hex, String txid) {
+    public record FinalizedTransaction(String hex, String txid, String wtxid) {
+        public FinalizedTransaction {
+            if(hex == null || hex.isBlank()) throw new IllegalArgumentException("transaction hex is required");
+            if(txid == null || !txid.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("transaction id must be lowercase 32-byte hexadecimal");
+            }
+            if(wtxid == null || !wtxid.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("witness transaction id must be lowercase 32-byte hexadecimal");
+            }
+        }
     }
 
     public record BroadcastResult(String txid) {

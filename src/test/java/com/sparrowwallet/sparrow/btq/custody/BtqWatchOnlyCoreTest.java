@@ -24,13 +24,21 @@ class BtqWatchOnlyCoreTest {
     private static final String FINALIZED_TX = "02000000000101" + "00".repeat(32)
             + "0000000000ffffffff01e803000000000000015101010100000000";
     private static final String FINALIZED_TXID = "4b01e7b3c8b285c6b1151720d4467564813a8048a80b17f5b0521c9d0aedff66";
+    private static final String HELP_WITH_INTERNAL = "getnewp2mraddress [...] ( \"label\" internal )\n\n"
+            + "Arguments:\n1. tree (json array, required)\n2. label (string, optional)\n"
+            + "3. internal (boolean, optional, default=false) Treat this destination as change\n";
+    private static final String HELP_WITHOUT_INTERNAL = "getnewp2mraddress [...] ( \"label\" )\n\n"
+            + "Arguments:\n1. tree (json array, required)\n2. label (string, optional) Optional label\n";
 
     @Test
     void verifiesBtqIdentityChainAndSynchronizationData() {
         ScriptedTransport transport = new ScriptedTransport()
                 .expect(ROOT, "getnetworkinfo", object("subversion", "/BTQ Core:0.4.4/"))
                 .expect(ROOT, "getblockchaininfo", object(
-                        "chain", "regtest", "blocks", 22, "headers", 24, "initialblockdownload", true));
+                        "chain", "regtest", "blocks", 22, "headers", 24,
+                        "initialblockdownload", true, "pruned", false))
+                .expect(ROOT, "getblockhash", string(BtqNetwork.REGTEST.genesisHash()))
+                .expect(ROOT, "help", text(HELP_WITH_INTERNAL));
 
         BtqWatchOnlyCore.NodeStatus status = core(transport).verifyNode();
 
@@ -38,6 +46,89 @@ class BtqWatchOnlyCoreTest {
         assertEquals(22, status.blocks());
         assertEquals(24, status.headers());
         assertTrue(status.initialBlockDownload());
+        assertEquals(BtqNetwork.REGTEST.genesisHash(), status.genesisHash());
+        assertFalse(status.pruned());
+        transport.assertExhausted();
+    }
+
+    @Test
+    void rejectsAChainNameMatchWithTheWrongGenesisBlock() {
+        ScriptedTransport transport = new ScriptedTransport()
+                .expect(ROOT, "getnetworkinfo", object("subversion", "/BTQ Core:0.4.4/"))
+                .expect(ROOT, "getblockchaininfo", object(
+                        "chain", "regtest", "blocks", 1, "headers", 1,
+                        "initialblockdownload", false, "pruned", false))
+                .expect(ROOT, "getblockhash", string("00".repeat(32)));
+
+        assertThrows(IllegalStateException.class, () -> core(transport).verifyNode());
+        transport.assertExhausted();
+    }
+
+    @Test
+    void rejectsCustomSignetChallenge() {
+        ScriptedTransport transport = new ScriptedTransport()
+                .expect(ROOT, "getnetworkinfo", object("subversion", "/BTQ Core:0.4.4/"))
+                .expect(ROOT, "getblockchaininfo", object(
+                        "chain", "signet", "blocks", 1, "headers", 1,
+                        "initialblockdownload", false, "pruned", false))
+                .expect(ROOT, "getblockhash", string(BtqNetwork.SIGNET.genesisHash()))
+                .expect(ROOT, "help", text(HELP_WITH_INTERNAL))
+                .expect(ROOT, "getmininginfo", object("signet_challenge", "51"));
+
+        assertThrows(IllegalStateException.class, () -> core(transport, BtqNetwork.SIGNET).verifyNode());
+        transport.assertExhausted();
+    }
+
+    @Test
+    void rejectsANodeWhoseGetnewp2mraddressHasNoInternalParameter() {
+        ScriptedTransport transport = new ScriptedTransport()
+                .expect(ROOT, "getnetworkinfo", object("subversion", "/BTQ Core:0.4.4/"))
+                .expect(ROOT, "getblockchaininfo", object(
+                        "chain", "regtest", "blocks", 1, "headers", 1,
+                        "initialblockdownload", false, "pruned", false))
+                .expect(ROOT, "getblockhash", string(BtqNetwork.REGTEST.genesisHash()))
+                .expect(ROOT, "help", text(HELP_WITHOUT_INTERNAL));
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> core(transport).verifyNode());
+
+        assertTrue(failure.getMessage().contains("getnewp2mraddress(internal)"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("e3da3f784"), failure.getMessage());
+        transport.assertExhausted();
+    }
+
+    @Test
+    void acceptsANodeWhoseGetnewp2mraddressDeclaresInternal() {
+        ScriptedTransport transport = new ScriptedTransport()
+                .expect(ROOT, "getnetworkinfo", object("subversion", "/BTQ Core:0.4.4/"))
+                .expect(ROOT, "getblockchaininfo", object(
+                        "chain", "regtest", "blocks", 1, "headers", 1,
+                        "initialblockdownload", false, "pruned", false))
+                .expect(ROOT, "getblockhash", string(BtqNetwork.REGTEST.genesisHash()))
+                .expect(ROOT, "help", text(HELP_WITH_INTERNAL));
+
+        assertEquals(BtqNetwork.REGTEST, core(transport).verifyNode().network());
+
+        assertEquals("getnewp2mraddress", transport.parameters("help").get(0).getAsString());
+        transport.assertExhausted();
+    }
+
+    @Test
+    void namesTheRequiredCoreCommitWhenSignetChallengeIsAbsent() {
+        ScriptedTransport transport = new ScriptedTransport()
+                .expect(ROOT, "getnetworkinfo", object("subversion", "/BTQ Core:0.4.4/"))
+                .expect(ROOT, "getblockchaininfo", object(
+                        "chain", "signet", "blocks", 1, "headers", 1,
+                        "initialblockdownload", false, "pruned", false))
+                .expect(ROOT, "getblockhash", string(BtqNetwork.SIGNET.genesisHash()))
+                .expect(ROOT, "help", text(HELP_WITH_INTERNAL))
+                .expect(ROOT, "getmininginfo", object("blocks", 1));
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> core(transport, BtqNetwork.SIGNET).verifyNode());
+
+        assertTrue(failure.getMessage().contains("signet_challenge"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("f36e0b28e"), failure.getMessage());
         transport.assertExhausted();
     }
 
@@ -106,6 +197,7 @@ class BtqWatchOnlyCoreTest {
                         "iswatchonly", false,
                         "solvable", true,
                         "isdilithium", true,
+                        "ischange", false,
                         "witness_version", 2));
 
         BtqWatchOnlyCore.RegisteredAddress registered = core(transport).registerAddress(local, "receive-0");
@@ -116,6 +208,7 @@ class BtqWatchOnlyCoreTest {
         assertEquals(0, leaf.get("depth").getAsInt());
         assertEquals(192, leaf.get("leaf_version").getAsInt());
         assertEquals(HexFormat.of().formatHex(local.leafScript()), leaf.get("script").getAsString());
+        assertFalse(parameters.get(2).getAsBoolean());
         transport.assertExhausted();
     }
 
@@ -139,6 +232,37 @@ class BtqWatchOnlyCoreTest {
     }
 
     @Test
+    void registersChangeAsInternalWithoutReceiveClassification() {
+        BtqP2mrKeyPath.Address local = localAddress(BtqCustodySpec.Chain.CHANGE, 0);
+        String script = HexFormat.of().formatHex(local.scriptPubKey());
+        String root = HexFormat.of().formatHex(local.merkleRoot());
+        ScriptedTransport transport = new ScriptedTransport()
+                .expect(WALLET, "getwalletinfo", object(
+                        "descriptors", true, "private_keys_enabled", false))
+                .expect(WALLET, "getnewp2mraddress", object(
+                        "p2mr_id", "cd".repeat(8), "address", local.address(),
+                        "scriptPubKey", script, "merkle_root", root))
+                .expect(ROOT, "getdescriptorinfo", object(
+                        "descriptor", "addr(" + local.address() + ")#checksum",
+                        "isrange", false, "issolvable", false, "hasprivatekeys", false))
+                .expect(WALLET, "importdescriptors", array(object("success", true)))
+                .expect(WALLET, "getaddressinfo", object(
+                        "scriptPubKey", script, "ismine", true, "solvable", true,
+                        "isdilithium", true, "ischange", true, "witness_version", 2));
+
+        core(transport).registerHistoricalAddress(local, "qparrow-change");
+
+        assertTrue(transport.parameters("getnewp2mraddress").get(2).getAsBoolean());
+        JsonObject descriptor = transport.parameters("importdescriptors").get(0)
+                .getAsJsonArray().get(0).getAsJsonObject();
+        assertTrue(descriptor.get("internal").getAsBoolean());
+        assertEquals("now", descriptor.get("timestamp").getAsString(),
+                "historical registration must defer to one explicit recovery rescan");
+        assertFalse(descriptor.has("label"));
+        transport.assertExhausted();
+    }
+
+    @Test
     void acceptsOnlyTypedCanonicalLocallyWatchedP2mrUtxos() {
         BtqP2mrKeyPath.Address local = localAddress();
         ScriptedTransport transport = new ScriptedTransport()
@@ -146,7 +270,10 @@ class BtqWatchOnlyCoreTest {
                 .expect(WALLET, "listunspent", array(object(
                         "txid", "34".repeat(32), "vout", 1, "address", local.address(),
                         "scriptPubKey", HexFormat.of().formatHex(local.scriptPubKey()),
-                        "amount", "0.00100000", "confirmations", 3)));
+                        "amount", "0.00100000", "confirmations", 3), object(
+                        "txid", "35".repeat(32), "vout", 0, "address", local.address(),
+                        "scriptPubKey", HexFormat.of().formatHex(local.scriptPubKey()),
+                        "amount", "0.00000000", "confirmations", 3)));
 
         List<BtqWatchOnlyCore.WatchedUtxo> unspent = core(transport).listUtxos(1);
 
@@ -173,10 +300,25 @@ class BtqWatchOnlyCoreTest {
     }
 
     @Test
+    void retriesAReorgInterruptedRescanWithNullStopHeight() {
+        ScriptedTransport transport = new ScriptedTransport()
+                .expect(WALLET, "getwalletinfo", object("descriptors", true, "private_keys_enabled", false))
+                .expect(WALLET, "rescanblockchain", object("start_height", 0, "stop_height", JsonNull.INSTANCE))
+                .expect(WALLET, "rescanblockchain", object("start_height", 0, "stop_height", 241));
+
+        BtqWatchOnlyCore.RescanResult result = core(transport).rescanFromGenesis();
+
+        assertEquals(241, result.stopHeight());
+        transport.assertExhausted();
+    }
+
+    @Test
     void fundsOnlyExplicitInputsWithQuantumChangeAndFinalizesAfterLocalSigning() {
         BtqP2mrKeyPath.Address payment = localAddress(BtqCustodySpec.Chain.RECEIVE, 1);
         BtqP2mrKeyPath.Address change = localAddress(BtqCustodySpec.Chain.CHANGE, 0);
         String fundingTxid = "12".repeat(32);
+        BtqPsbtSigner.SignedPsbt signed = BtqPsbtTestFixtures.signed();
+        BtqPsbtSigner.FinalizedTransaction local = BtqPsbtSigner.finalizeTransaction(signed);
         ScriptedTransport transport = new ScriptedTransport()
                 .expect(WALLET, "getwalletinfo", object(
                         "walletname", "qparrow_custody",
@@ -186,13 +328,11 @@ class BtqWatchOnlyCoreTest {
                         "psbt", "unsigned-opaque",
                         "fee", "0.00001000",
                         "changepos", 1))
-                .expect(ROOT, "finalizepsbt", object(
-                        "complete", true,
-                        "hex", FINALIZED_TX))
                 .expect(ROOT, "testmempoolaccept", array(object(
-                        "txid", FINALIZED_TXID,
+                        "txid", local.txid(),
+                        "wtxid", local.wtxid(),
                         "allowed", true)))
-                .expect(ROOT, "sendrawtransaction", string(FINALIZED_TXID));
+                .expect(ROOT, "sendrawtransaction", string(local.txid()));
         BtqWatchOnlyCore core = core(transport);
 
         BtqWatchOnlyCore.FundedPsbt funded = core.createFundedPsbt(
@@ -208,24 +348,24 @@ class BtqWatchOnlyCoreTest {
         assertFalse(options.get("add_inputs").getAsBoolean());
         assertTrue(options.get("include_watching").getAsBoolean());
         assertEquals(change.address(), options.get("change_address").getAsString());
+        assertTrue(options.get("replaceable").getAsBoolean(),
+                "RBF signalling must be requested explicitly, not inherited from -walletrbf");
 
-        BtqWatchOnlyCore.FinalizedTransaction finalized = core.finalizePsbt(
-                new BtqPsbtSigner.SignedPsbt("signed-opaque", 1_000,
-                        List.of("00".repeat(32)), FINALIZED_TXID));
-        assertEquals(FINALIZED_TXID, finalized.txid());
-        assertEquals(FINALIZED_TXID, core.broadcast(finalized).txid());
+        BtqWatchOnlyCore.FinalizedTransaction finalized = core.finalizeSignedPsbt(signed);
+        assertEquals(local.hex(), finalized.hex());
+        assertEquals(local.txid(), finalized.txid());
+        assertEquals(local.wtxid(), finalized.wtxid());
+        assertEquals(local.txid(), core.broadcast(finalized).txid());
         transport.assertExhausted();
     }
 
     @Test
-    void rejectsFinalizedTransactionSubstitutionByCore() {
-        String substituted = FINALIZED_TX.replace("e803000000000000", "e903000000000000");
-        ScriptedTransport transport = new ScriptedTransport()
-                .expect(ROOT, "finalizepsbt", object("complete", true, "hex", substituted));
+    void rejectsSignedWitnessMutationBeforeCallingCorePolicy() {
+        BtqPsbtSigner.SignedPsbt tampered = BtqPsbtTestFixtures.withTamperedSignature(
+                BtqPsbtTestFixtures.signed());
+        ScriptedTransport transport = new ScriptedTransport();
 
-        assertThrows(IllegalStateException.class, () -> core(transport).finalizePsbt(
-                new BtqPsbtSigner.SignedPsbt("signed-opaque", 1_000,
-                        List.of("00".repeat(32)), FINALIZED_TXID)));
+        assertThrows(IllegalStateException.class, () -> core(transport).finalizeSignedPsbt(tampered));
         transport.assertExhausted();
     }
 
@@ -251,10 +391,14 @@ class BtqWatchOnlyCoreTest {
     }
 
     private static BtqWatchOnlyCore core(ScriptedTransport transport) {
+        return core(transport, BtqNetwork.REGTEST);
+    }
+
+    private static BtqWatchOnlyCore core(ScriptedTransport transport, BtqNetwork network) {
         BtqNodeConfig config = new BtqNodeConfig(
-                URI.create("http://127.0.0.1:18443/"),
+                URI.create("http://127.0.0.1:" + network.rpcPort() + "/"),
                 "qparrow_custody",
-                BtqNetwork.REGTEST,
+                network,
                 BtqRpcCredentials.none(),
                 Duration.ofSeconds(5));
         return new BtqWatchOnlyCore(config, new BtqRpcClient(config, transport));
@@ -283,6 +427,10 @@ class BtqWatchOnlyCoreTest {
             array.add(element);
         }
         return array;
+    }
+
+    private static JsonElement text(String value) {
+        return new com.google.gson.JsonPrimitive(value);
     }
 
     private static JsonElement string(String value) {

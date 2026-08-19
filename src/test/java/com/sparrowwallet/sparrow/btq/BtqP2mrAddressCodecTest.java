@@ -8,6 +8,18 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class BtqP2mrAddressCodecTest {
     @Test
+    void pinsEveryBtqGenesisIdentity() {
+        assertEquals("000003194a90d8d8eff8b39a7ad4e2490729b97a6772b7f4c4cb8887dffd1ae4",
+                BtqNetwork.MAINNET.genesisHash());
+        assertEquals("000000ffba1eed17608850f753ca60e74456dd3fe7af86b72aadba7d6052f7dd",
+                BtqNetwork.TESTNET.genesisHash());
+        assertEquals("00000120a12ac337785653cdff1f23b4891d3ffeb492a011cc95b165e86a4b15",
+                BtqNetwork.SIGNET.genesisHash());
+        assertEquals("5a6c309a7e9bb2fa314e63630520ca3c598c86a91dd2c6737e160cfadfc50f38",
+                BtqNetwork.REGTEST.genesisHash());
+    }
+
+    @Test
     void encodesCanonicalWitnessV2Bech32mForEveryBtqNetwork() {
         String root = "11".repeat(32);
 

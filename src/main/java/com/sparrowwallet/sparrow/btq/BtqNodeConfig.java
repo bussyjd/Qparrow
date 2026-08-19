@@ -9,7 +9,7 @@ import java.util.Objects;
 import java.util.regex.Pattern;
 
 /** Immutable connection settings for one BTQ Core wallet. */
-public final class BtqNodeConfig {
+public final class BtqNodeConfig implements AutoCloseable {
     private static final Pattern SAFE_WALLET_NAME = Pattern.compile("[A-Za-z0-9._-]{1,128}");
 
     private final URI rpcUri;
@@ -59,6 +59,15 @@ public final class BtqNodeConfig {
 
     public URI walletEndpoint() {
         return rpcUri.resolve("/wallet/" + walletName);
+    }
+
+    public BtqNodeConfig withWalletName(String boundWalletName) {
+        return new BtqNodeConfig(rpcUri, boundWalletName, network, credentials, requestTimeout);
+    }
+
+    @Override
+    public void close() {
+        credentials.close();
     }
 
     @Override

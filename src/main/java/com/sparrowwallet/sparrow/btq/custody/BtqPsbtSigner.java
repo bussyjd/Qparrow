@@ -29,6 +29,8 @@ public final class BtqPsbtSigner {
     public static final int MAX_SIGNING_INPUTS = 128;
     public static final int MAX_OUTPUTS = 128;
     private static final int MAX_FINALIZED_TRANSACTION_BYTES = 4_000_000;
+    private static final int MAX_STANDARD_TX_WEIGHT = 400_000;
+    private static final int SINGLE_KEY_P2MR_WITNESS_BYTES = 3_746;
     private static final long MAX_MONEY_SATS = 21_000_000L * 100_000_000L;
     private static final HexFormat HEX = HexFormat.of();
 
@@ -47,12 +49,15 @@ public final class BtqPsbtSigner {
     private BtqPsbtSigner() {
     }
 
-    public record Input(String txid, int vout, BtqCustodySpec.Chain chain, int index) {
+    public record Input(String txid, int vout, long amountSats, BtqCustodySpec.Chain chain, int index) {
         public Input {
             if(txid == null || !txid.matches("[0-9a-fA-F]{64}")) {
                 throw new IllegalArgumentException("input transaction id must be 32-byte hexadecimal");
             }
             if(vout < 0) throw new IllegalArgumentException("input output index cannot be negative");
+            if(amountSats <= 0 || amountSats > MAX_MONEY_SATS) {
+                throw new IllegalArgumentException("input amount is outside the monetary range");
+            }
             Objects.requireNonNull(chain, "chain");
             if(index < 0 || index > BtqCustodySpec.MAX_INDEX) {
                 throw new IllegalArgumentException("key index out of range");
@@ -73,6 +78,18 @@ public final class BtqPsbtSigner {
     public record Review(long feeSats) {
     }
 
+    public record FinalizedTransaction(String hex, String txid, String wtxid) {
+        public FinalizedTransaction {
+            Objects.requireNonNull(hex, "hex");
+            if(txid == null || !txid.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("finalized transaction id must be lowercase 32-byte hexadecimal");
+            }
+            if(wtxid == null || !wtxid.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("finalized witness transaction id must be lowercase 32-byte hexadecimal");
+            }
+        }
+    }
+
     public static SignedPsbt sign(String base64Psbt, byte[] masterSecret, BtqNetwork network,
                                   List<Input> approvedInputs, BtqSpendIntent intent) {
         Processed processed = process(base64Psbt, masterSecret, network, approvedInputs, intent, true);
@@ -86,6 +103,145 @@ public final class BtqPsbtSigner {
         return new Review(processed.feeSats);
     }
 
+    /**
+     * Validate the signed PSBT again and construct the only witness Qparrow supports.
+     * Core is deliberately not trusted to select or assemble witness data.
+     */
+    public static FinalizedTransaction finalizeTransaction(SignedPsbt signedPsbt) {
+        Objects.requireNonNull(signedPsbt, "signedPsbt");
+        final byte[] encoded = decodeCanonicalBase64(signedPsbt.base64(), "signed PSBT");
+        if(encoded.length > 8 * 1024 * 1024) {
+            throw new IllegalArgumentException("signed PSBT exceeds the Qparrow signing limit");
+        }
+
+        Psbt psbt = parsePsbt(encoded);
+        validateFieldSet(psbt, true);
+        Transaction tx = parseUnsignedTransaction(psbt.unsignedTransaction);
+        requireStandardWeight(psbt, tx);
+        List<TxOut> spentOutputs = new ArrayList<>(tx.inputs.size());
+        List<FinalizingInput> finalizingInputs = new ArrayList<>(tx.inputs.size());
+        long inputTotal = 0;
+        long outputTotal = 0;
+        for(int i = 0; i < tx.inputs.size(); i++) {
+            MapData inputMap = psbt.inputMaps.get(i);
+            if(inputMap.hasType(PSBT_IN_FINAL_SCRIPTSIG) || inputMap.hasType(PSBT_IN_FINAL_SCRIPTWITNESS)) {
+                throw new IllegalArgumentException("input " + i + " is already finalized");
+            }
+            MapEntry sighashEntry = inputMap.singleType(PSBT_IN_SIGHASH_TYPE, false, i);
+            if(sighashEntry != null && (sighashEntry.key.length != 1 || sighashEntry.value.length != 4
+                    || readUint32(sighashEntry.value, 0) != BtqMldsa44.SIGHASH_ALL)) {
+                throw new IllegalArgumentException("input " + i + " does not use SIGHASH_ALL");
+            }
+
+            MapEntry witnessEntry = inputMap.singleType(PSBT_IN_WITNESS_UTXO, true, i);
+            if(witnessEntry.key.length != 1) {
+                throw new IllegalArgumentException("input " + i + " has a malformed witness UTXO key");
+            }
+            TxOut spentOutput = parseTxOut(witnessEntry.value, "input " + i + " witness UTXO");
+            spentOutputs.add(spentOutput);
+            inputTotal = addMoney(inputTotal, spentOutput.value, "input amount overflow");
+
+            MapEntry leaf = inputMap.singleType(PSBT_IN_P2MR_LEAF_SCRIPT, true, i);
+            if(leaf.key.length != 2 || (leaf.key[1] & 0xff) != BtqP2mrKeyPath.CONTROL_BYTE
+                    || leaf.value.length < 2
+                    || (leaf.value[leaf.value.length - 1] & 0xff) != BtqP2mrKeyPath.LEAF_VERSION) {
+                throw new IllegalArgumentException("input " + i + " has a non-Qparrow P2MR leaf or control block");
+            }
+            byte[] control = Arrays.copyOfRange(leaf.key, 1, leaf.key.length);
+            byte[] leafScript = Arrays.copyOf(leaf.value, leaf.value.length - 1);
+
+            MapEntry root = inputMap.singleType(PSBT_IN_P2MR_MERKLE_ROOT, true, i);
+            byte[] leafHash = BtqP2mrKeyPath.tapLeafHash(leafScript);
+            if(root.key.length != 1 || root.value.length != 32 || !Arrays.equals(root.value, leafHash)) {
+                throw new IllegalArgumentException("input " + i + " has a mismatched single-leaf P2MR root");
+            }
+            byte[] expectedScriptPubKey = concat(new byte[]{0x52, 0x20}, leafHash);
+            if(!Arrays.equals(spentOutput.scriptPubKey, expectedScriptPubKey)) {
+                throw new IllegalArgumentException("input " + i + " witness UTXO is not committed by its P2MR leaf");
+            }
+
+            MapEntry signature = inputMap.singleType(PSBT_IN_P2MR_DILITHIUM_SCRIPT_SIG, true, i);
+            if(signature.key.length != 1 + BtqMldsa44.PUBLIC_KEY_BYTES + 32
+                    || signature.value.length != BtqMldsa44.TRANSACTION_SIGNATURE_BYTES) {
+                throw new IllegalArgumentException("input " + i + " has a malformed P2MR ML-DSA signature field");
+            }
+            byte[] publicKey = Arrays.copyOfRange(signature.key, 1, 1 + BtqMldsa44.PUBLIC_KEY_BYTES);
+            byte[] signatureLeafHash = Arrays.copyOfRange(signature.key,
+                    1 + BtqMldsa44.PUBLIC_KEY_BYTES, signature.key.length);
+            if(!Arrays.equals(signatureLeafHash, leafHash)
+                    || !Arrays.equals(leafScript, BtqP2mrKeyPath.singleKeyLeaf(publicKey))) {
+                throw new IllegalArgumentException("input " + i + " signature is not bound to its exact P2MR leaf");
+            }
+            finalizingInputs.add(new FinalizingInput(publicKey, signature.value, leafScript, control));
+        }
+        for(TxOut output : tx.outputs) {
+            BtqSpendIntent.requireP2mr(output.scriptPubKey, "finalized transaction output");
+            outputTotal = addMoney(outputTotal, output.value, "output amount overflow");
+        }
+        long fee;
+        try {
+            fee = Math.subtractExact(inputTotal, outputTotal);
+        } catch(ArithmeticException e) {
+            throw new IllegalArgumentException("transaction fee overflow", e);
+        }
+        if(fee < 0 || fee != signedPsbt.feeSats()) {
+            throw new IllegalArgumentException("signed PSBT fee does not match its transaction");
+        }
+
+        List<String> actualSighashes = new ArrayList<>(tx.inputs.size());
+        for(int i = 0; i < tx.inputs.size(); i++) {
+            FinalizingInput input = finalizingInputs.get(i);
+            byte[] sighash = signatureHash(tx, spentOutputs, i, input.leafScript);
+            if(!BtqMldsa44.verifyTransactionHash(input.publicKey, sighash, input.signature)) {
+                throw new IllegalArgumentException("input " + i + " has an invalid ML-DSA signature");
+            }
+            actualSighashes.add(HEX.formatHex(sighash));
+        }
+        if(!actualSighashes.equals(signedPsbt.sighashes())) {
+            throw new IllegalArgumentException("signed PSBT sighash summary does not match its signatures");
+        }
+
+        String txid = wireTxidHex(sha256(sha256(psbt.unsignedTransaction)));
+        if(!txid.equals(signedPsbt.expectedTxid())) {
+            throw new IllegalArgumentException("signed PSBT transaction id does not match its unsigned transaction");
+        }
+
+        ByteArrayOutputStream wire = new ByteArrayOutputStream(psbt.unsignedTransaction.length
+                + tx.inputs.size() * (BtqMldsa44.TRANSACTION_SIGNATURE_BYTES + BtqMldsa44.PUBLIC_KEY_BYTES + 32));
+        writeInt32(wire, tx.version);
+        wire.write(0);
+        wire.write(1);
+        writeCompactSize(wire, tx.inputs.size());
+        for(TxIn input : tx.inputs) {
+            wire.writeBytes(input.txid);
+            writeUint32(wire, input.vout);
+            wire.write(0);
+            writeUint32(wire, input.sequence);
+        }
+        writeCompactSize(wire, tx.outputs.size());
+        for(TxOut output : tx.outputs) writeTxOut(wire, output);
+        for(FinalizingInput input : finalizingInputs) {
+            writeCompactSize(wire, 3);
+            writeVarBytes(wire, input.signature);
+            writeVarBytes(wire, input.leafScript);
+            writeVarBytes(wire, input.controlBlock);
+        }
+        writeUint32(wire, tx.lockTime);
+        byte[] wireBytes = wire.toByteArray();
+        return new FinalizedTransaction(HEX.formatHex(wireBytes), txid,
+                wireTxidHex(sha256(sha256(wireBytes))));
+    }
+
+    private static long addMoney(long total, long amount, String error) {
+        try {
+            long result = Math.addExact(total, amount);
+            if(result > MAX_MONEY_SATS) throw new ArithmeticException(error);
+            return result;
+        } catch(ArithmeticException e) {
+            throw new IllegalArgumentException(error, e);
+        }
+    }
+
     private static Processed process(String base64Psbt, byte[] masterSecret, BtqNetwork network,
                                      List<Input> approvedInputs, BtqSpendIntent intent, boolean createSignatures) {
         BtqCustodySpec.requireLength(masterSecret, BtqCustodySpec.MASTER_SECRET_BYTES, "master secret");
@@ -93,17 +249,13 @@ public final class BtqPsbtSigner {
         Objects.requireNonNull(approvedInputs, "approved inputs");
         Objects.requireNonNull(intent, "intent");
 
-        byte[] encoded;
-        try {
-            encoded = Base64.getDecoder().decode(Objects.requireNonNull(base64Psbt, "PSBT"));
-        } catch(IllegalArgumentException e) {
-            throw new IllegalArgumentException("PSBT is not canonical base64", e);
-        }
+        byte[] encoded = decodeCanonicalBase64(base64Psbt, "PSBT");
         if(encoded.length > 8 * 1024 * 1024) {
             throw new IllegalArgumentException("PSBT exceeds the Qparrow signing limit");
         }
 
         Psbt psbt = parsePsbt(encoded);
+        validateFieldSet(psbt, false);
         Transaction tx = parseUnsignedTransaction(psbt.unsignedTransaction);
         if(tx.inputs.size() != approvedInputs.size()) {
             throw new IllegalArgumentException("one approved Qparrow outpoint and key is required for every input");
@@ -113,6 +265,16 @@ public final class BtqPsbtSigner {
         }
         if(tx.outputs.isEmpty() || tx.outputs.size() > MAX_OUTPUTS) {
             throw new IllegalArgumentException("unsupported output count");
+        }
+        requireStandardWeight(psbt, tx);
+
+        Map<OutpointKey, Input> approvedByOutpoint = new HashMap<>();
+        for(Input approved : approvedInputs) {
+            if(approved == null) throw new IllegalArgumentException("approved input is required");
+            OutpointKey key = new OutpointKey(approved.txid().toLowerCase(java.util.Locale.ROOT), approved.vout());
+            if(approvedByOutpoint.putIfAbsent(key, approved) != null) {
+                throw new IllegalArgumentException("approved input list contains a duplicate outpoint");
+            }
         }
 
         List<TxOut> spentOutputs = new ArrayList<>(tx.inputs.size());
@@ -140,15 +302,17 @@ public final class BtqPsbtSigner {
             TxOut spentOutput = parseTxOut(witnessEntry.value, "input " + i + " witness UTXO");
             spentOutputs.add(spentOutput);
 
-            Input approved = approvedInputs.get(i);
             TxIn transactionInput = tx.inputs.get(i);
             String transactionTxid = wireTxidHex(transactionInput.txid);
-            if(transactionInput.vout != approved.vout()
-                    || !transactionTxid.equalsIgnoreCase(approved.txid())) {
+            Input approved = approvedByOutpoint.remove(new OutpointKey(transactionTxid, transactionInput.vout));
+            if(approved == null) {
                 throw new IllegalArgumentException("input " + i + " is not the approved outpoint");
             }
             if(!seenOutpoints.add(transactionTxid + ':' + transactionInput.vout)) {
                 throw new IllegalArgumentException("transaction contains a duplicate input outpoint");
+            }
+            if(spentOutput.value != approved.amountSats()) {
+                throw new IllegalArgumentException("input " + i + " witness UTXO amount does not match the selected coin");
             }
             Input locator = approved;
             byte[] keySeed = BtqCustodySpec.deriveKeySeed(masterSecret, network, locator.chain(), locator.index());
@@ -164,6 +328,9 @@ public final class BtqPsbtSigner {
                 Arrays.fill(keySeed, (byte)0);
             }
           }
+            if(!approvedByOutpoint.isEmpty()) {
+                throw new IllegalArgumentException("transaction is missing an approved input outpoint");
+            }
 
             long fee = validateIntent(spentOutputs, tx.outputs, intent);
             List<String> sighashes = new ArrayList<>(createSignatures ? tx.inputs.size() : 0);
@@ -219,10 +386,14 @@ public final class BtqPsbtSigner {
         long inputTotal = 0;
         long outputTotal = 0;
         try {
-            for(TxOut input : spentOutputs) inputTotal = Math.addExact(inputTotal, input.value);
+            for(TxOut input : spentOutputs) {
+                inputTotal = Math.addExact(inputTotal, input.value);
+                if(inputTotal > MAX_MONEY_SATS) throw new ArithmeticException("input amount exceeds MAX_MONEY");
+            }
             for(TxOut output : outputs) {
                 BtqSpendIntent.requireP2mr(output.scriptPubKey, "transaction output");
                 outputTotal = Math.addExact(outputTotal, output.value);
+                if(outputTotal > MAX_MONEY_SATS) throw new ArithmeticException("output amount exceeds MAX_MONEY");
                 OutputKey key = new OutputKey(output.value, output.scriptPubKey);
                 Integer count = required.get(key);
                 if(count != null && count > 0) {
@@ -319,6 +490,41 @@ public final class BtqPsbtSigner {
             throw new IllegalArgumentException("trailing bytes after PSBT maps");
         }
         return new Psbt(global, unsigned.value.clone(), inputs, outputs);
+    }
+
+    private static void validateFieldSet(Psbt psbt, boolean signed) {
+        requireOnlyTypes(psbt.globalMap, Set.of(PSBT_GLOBAL_UNSIGNED_TX, PSBT_GLOBAL_VERSION), "global map");
+        Set<Integer> inputTypes = signed
+                ? Set.of(PSBT_IN_WITNESS_UTXO, PSBT_IN_SIGHASH_TYPE, PSBT_IN_P2MR_LEAF_SCRIPT,
+                        PSBT_IN_P2MR_MERKLE_ROOT, PSBT_IN_P2MR_DILITHIUM_SCRIPT_SIG)
+                : Set.of(PSBT_IN_WITNESS_UTXO, PSBT_IN_SIGHASH_TYPE, PSBT_IN_P2MR_LEAF_SCRIPT,
+                        PSBT_IN_P2MR_MERKLE_ROOT);
+        for(int i = 0; i < psbt.inputMaps.size(); i++) {
+            requireOnlyTypes(psbt.inputMaps.get(i), inputTypes, "input " + i);
+        }
+        for(int i = 0; i < psbt.outputMaps.size(); i++) {
+            if(!psbt.outputMaps.get(i).entries.isEmpty()) {
+                throw new IllegalArgumentException("output " + i + " contains unsupported PSBT fields");
+            }
+        }
+    }
+
+    private static void requireStandardWeight(Psbt psbt, Transaction tx) {
+        long finalWeight = Math.addExact(Math.multiplyExact((long)psbt.unsignedTransaction.length, 16),
+                Math.addExact(2, Math.multiplyExact((long)tx.inputs.size(), SINGLE_KEY_P2MR_WITNESS_BYTES)));
+        if(finalWeight > MAX_STANDARD_TX_WEIGHT) {
+            throw new IllegalArgumentException("transaction exceeds BTQ's standard transaction weight");
+        }
+    }
+
+    private static void requireOnlyTypes(MapData map, Set<Integer> allowed, String name) {
+        for(MapEntry entry : map.entries) {
+            int type = entry.key[0] & 0xff;
+            if(!allowed.contains(type)) {
+                throw new IllegalArgumentException(name + " contains unsupported PSBT field type 0x"
+                        + Integer.toHexString(type));
+            }
+        }
     }
 
     private static Transaction parseUnsignedTransaction(byte[] bytes) {
@@ -444,6 +650,11 @@ public final class BtqPsbtSigner {
         return wireTxidHex(sha256(sha256(nonWitness.toByteArray())));
     }
 
+    static String finalizedWitnessTransactionId(String transactionHex) {
+        finalizedTransactionId(transactionHex);
+        return wireTxidHex(sha256(sha256(HEX.parseHex(transactionHex))));
+    }
+
     private static void writeMap(ByteArrayOutputStream output, MapData map) {
         for(MapEntry entry : map.entries) {
             writeCompactSize(output, entry.key.length);
@@ -460,6 +671,11 @@ public final class BtqPsbtSigner {
         output.writeBytes(txOut.scriptPubKey);
     }
 
+    private static void writeVarBytes(ByteArrayOutputStream output, byte[] value) {
+        writeCompactSize(output, value.length);
+        output.writeBytes(value);
+    }
+
     private static byte[] concat(byte[]... values) {
         int length = 0;
         for(byte[] value : values) length = Math.addExact(length, value.length);
@@ -470,6 +686,20 @@ public final class BtqPsbtSigner {
             offset += value.length;
         }
         return result;
+    }
+
+    private static byte[] decodeCanonicalBase64(String value, String name) {
+        Objects.requireNonNull(value, name);
+        final byte[] decoded;
+        try {
+            decoded = Base64.getDecoder().decode(value);
+        } catch(IllegalArgumentException e) {
+            throw new IllegalArgumentException(name + " is not canonical base64", e);
+        }
+        if(!Base64.getEncoder().encodeToString(decoded).equals(value)) {
+            throw new IllegalArgumentException(name + " is not canonical base64");
+        }
+        return decoded;
     }
 
     private static String wireTxidHex(byte[] wireTxid) {
@@ -607,6 +837,18 @@ public final class BtqPsbtSigner {
     }
 
     private record SigningInput(byte[] keySeed, BtqP2mrKeyPath.Address address) {
+    }
+
+    private record FinalizingInput(byte[] publicKey, byte[] signature, byte[] leafScript, byte[] controlBlock) {
+        private FinalizingInput {
+            publicKey = publicKey.clone();
+            signature = signature.clone();
+            leafScript = leafScript.clone();
+            controlBlock = controlBlock.clone();
+        }
+    }
+
+    private record OutpointKey(String txid, long vout) {
     }
 
     private static final class OutputKey {

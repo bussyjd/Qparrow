@@ -11,8 +11,12 @@ import java.util.Objects;
 
 /** Supplies an RPC Authorization header without exposing credentials through configuration logging. */
 @FunctionalInterface
-public interface BtqRpcCredentials {
+public interface BtqRpcCredentials extends AutoCloseable {
     String authorizationHeader() throws IOException;
+
+    @Override
+    default void close() {
+    }
 
     static BtqRpcCredentials none() {
         return () -> null;
@@ -36,16 +40,29 @@ public interface BtqRpcCredentials {
     static BtqRpcCredentials basic(String username, char[] password) {
         Objects.requireNonNull(username, "username");
         Objects.requireNonNull(password, "password");
-        char[] passwordCopy = password.clone();
-        return () -> {
-            char[] userPass = new char[username.length() + 1 + passwordCopy.length];
-            username.getChars(0, username.length(), userPass, 0);
-            userPass[username.length()] = ':';
-            System.arraycopy(passwordCopy, 0, userPass, username.length() + 1, passwordCopy.length);
-            try {
-                return basicHeader(new String(userPass));
-            } finally {
-                Arrays.fill(userPass, '\0');
+        return new BtqRpcCredentials() {
+            private char[] passwordCopy = password.clone();
+
+            @Override
+            public synchronized String authorizationHeader() throws IOException {
+                if(passwordCopy == null) throw new IOException("BTQ RPC credentials are closed");
+                char[] userPass = new char[username.length() + 1 + passwordCopy.length];
+                username.getChars(0, username.length(), userPass, 0);
+                userPass[username.length()] = ':';
+                System.arraycopy(passwordCopy, 0, userPass, username.length() + 1, passwordCopy.length);
+                try {
+                    return basicHeader(new String(userPass));
+                } finally {
+                    Arrays.fill(userPass, '\0');
+                }
+            }
+
+            @Override
+            public synchronized void close() {
+                if(passwordCopy != null) {
+                    Arrays.fill(passwordCopy, '\0');
+                    passwordCopy = null;
+                }
             }
         };
     }

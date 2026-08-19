@@ -22,6 +22,7 @@ import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Set;
+import java.util.HexFormat;
 
 /**
  * Authenticated, monotonically increasing receive/change address state.
@@ -31,6 +32,7 @@ import java.util.Set;
  * has no import path for Sparrow, Core, or earlier Qparrow prototypes.</p>
  */
 public final class BtqWalletStateStore {
+    private static final Object PROCESS_LOCK = new Object();
     private static final byte[] MAGIC = {'Q', 'P', 'B', 'T', 'Q', 'S', 'T', 'A'};
     private static final byte[] ID_DOMAIN = "Qparrow/BTQ/WalletId/v1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     private static final byte[] AUTH_DOMAIN = "Qparrow/BTQ/StateAuth/v1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
@@ -42,6 +44,35 @@ public final class BtqWalletStateStore {
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
 
     private BtqWalletStateStore() {
+    }
+
+    /** Create the authenticated zero-counter state exactly once for a new vault. */
+    static void initializeNew(Path stateFile, byte[] masterSecret, BtqNetwork network) throws IOException {
+        Objects.requireNonNull(stateFile, "stateFile");
+        Objects.requireNonNull(network, "network");
+        BtqCustodySpec.requireLength(masterSecret, BtqCustodySpec.MASTER_SECRET_BYTES, "master secret");
+        Path absolute = stateFile.toAbsolutePath().normalize();
+        Path parent = absolute.getParent();
+        if(parent == null || !Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("wallet-state parent directory does not exist");
+        }
+        Path lockPath = parent.resolve(absolute.getFileName() + ".lock");
+        byte[] walletId = derive(masterSecret, network, ID_DOMAIN, WALLET_ID_BYTES);
+        byte[] authKey = derive(masterSecret, network, AUTH_DOMAIN, MAC_BYTES);
+        try {
+            synchronized(PROCESS_LOCK) {
+                try(FileChannel lockChannel = openLockFile(lockPath); FileLock ignored = lockChannel.lock()) {
+                    hardenPermissions(lockPath);
+                    if(Files.exists(absolute, LinkOption.NOFOLLOW_LINKS)) {
+                        throw new IOException("refusing to overwrite existing wallet state");
+                    }
+                    write(absolute, network, walletId, authKey, new State(0, 0));
+                }
+            }
+        } finally {
+            Arrays.fill(walletId, (byte)0);
+            Arrays.fill(authKey, (byte)0);
+        }
     }
 
     /** Atomically reserve and return the next address index for a chain. */
@@ -60,20 +91,63 @@ public final class BtqWalletStateStore {
         Path lockPath = parent.resolve(absolute.getFileName() + ".lock");
         byte[] walletId = derive(masterSecret, network, ID_DOMAIN, WALLET_ID_BYTES);
         byte[] authKey = derive(masterSecret, network, AUTH_DOMAIN, MAC_BYTES);
-        try(FileChannel lockChannel = openLockFile(lockPath); FileLock ignored = lockChannel.lock()) {
-            hardenPermissions(lockPath);
-            State current = Files.exists(absolute, LinkOption.NOFOLLOW_LINKS)
-                    ? read(absolute, network, walletId, authKey)
-                    : new State(0, 0);
-            int reserved = chain == BtqCustodySpec.Chain.RECEIVE ? current.nextReceive : current.nextChange;
-            if(reserved == BtqCustodySpec.MAX_INDEX) {
-                throw new IOException("wallet derivation index is exhausted");
+        try {
+            synchronized(PROCESS_LOCK) {
+                try(FileChannel lockChannel = openLockFile(lockPath); FileLock ignored = lockChannel.lock()) {
+                    hardenPermissions(lockPath);
+                    if(!Files.exists(absolute, LinkOption.NOFOLLOW_LINKS)) {
+                        throw new IOException("wallet state is missing; restore it before deriving another address");
+                    }
+                    State current = read(absolute, network, walletId, authKey);
+                    int reserved = chain == BtqCustodySpec.Chain.RECEIVE ? current.nextReceive : current.nextChange;
+                    if(reserved == BtqCustodySpec.MAX_INDEX) {
+                        throw new IOException("wallet derivation index is exhausted");
+                    }
+                    State updated = chain == BtqCustodySpec.Chain.RECEIVE
+                            ? new State(reserved + 1, current.nextChange)
+                            : new State(current.nextReceive, reserved + 1);
+                    write(absolute, network, walletId, authKey, updated);
+                    return reserved;
+                }
             }
-            State updated = chain == BtqCustodySpec.Chain.RECEIVE
-                    ? new State(reserved + 1, current.nextChange)
-                    : new State(current.nextReceive, reserved + 1);
-            write(absolute, network, walletId, authKey, updated);
-            return reserved;
+        } finally {
+            Arrays.fill(walletId, (byte)0);
+            Arrays.fill(authKey, (byte)0);
+        }
+    }
+
+    /** Return the exact authenticated bytes while excluding every address reservation writer. */
+    static byte[] authenticatedSnapshot(Path stateFile, byte[] masterSecret, BtqNetwork network)
+            throws IOException {
+        Objects.requireNonNull(stateFile, "stateFile");
+        Objects.requireNonNull(network, "network");
+        BtqCustodySpec.requireLength(masterSecret, BtqCustodySpec.MASTER_SECRET_BYTES, "master secret");
+        Path absolute = stateFile.toAbsolutePath().normalize();
+        Path parent = absolute.getParent();
+        if(parent == null || !Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("wallet-state parent directory does not exist");
+        }
+        Path lockPath = parent.resolve(absolute.getFileName() + ".lock");
+        byte[] walletId = derive(masterSecret, network, ID_DOMAIN, WALLET_ID_BYTES);
+        byte[] authKey = derive(masterSecret, network, AUTH_DOMAIN, MAC_BYTES);
+        try {
+            synchronized(PROCESS_LOCK) {
+                try(FileChannel lockChannel = openLockFile(lockPath); FileLock ignored = lockChannel.lock()) {
+                    hardenPermissions(lockPath);
+                    if(!Files.isRegularFile(absolute, LinkOption.NOFOLLOW_LINKS)) {
+                        throw new IOException("wallet state is not a regular file");
+                    }
+                    requireOwnerOnlyPermissions(absolute);
+                    byte[] snapshot = Files.readAllBytes(absolute);
+                    try {
+                        decode(snapshot, network, walletId, authKey);
+                    } catch(IOException e) {
+                        Arrays.fill(snapshot, (byte)0);
+                        throw e;
+                    }
+                    return snapshot;
+                }
+            }
         } finally {
             Arrays.fill(walletId, (byte)0);
             Arrays.fill(authKey, (byte)0);
@@ -94,6 +168,17 @@ public final class BtqWalletStateStore {
         }
     }
 
+    static String walletIdHex(byte[] masterSecret, BtqNetwork network) {
+        BtqCustodySpec.requireLength(masterSecret, BtqCustodySpec.MASTER_SECRET_BYTES, "master secret");
+        Objects.requireNonNull(network, "network");
+        byte[] walletId = derive(masterSecret, network, ID_DOMAIN, WALLET_ID_BYTES);
+        try {
+            return HexFormat.of().formatHex(walletId);
+        } finally {
+            Arrays.fill(walletId, (byte)0);
+        }
+    }
+
     private static State read(Path path, BtqNetwork network, byte[] walletId, byte[] authKey) throws IOException {
         if(!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("wallet state is not a regular file");
@@ -101,18 +186,27 @@ public final class BtqWalletStateStore {
         requireOwnerOnlyPermissions(path);
         byte[] encoded = Files.readAllBytes(path);
         try {
-            if(encoded.length != FILE_BYTES) throw new IOException("invalid wallet-state length");
-            byte[] body = Arrays.copyOf(encoded, BODY_BYTES);
-            byte[] storedMac = Arrays.copyOfRange(encoded, BODY_BYTES, FILE_BYTES);
-            byte[] actualMac = hmacSha256(authKey, body);
-            try {
-                if(!java.security.MessageDigest.isEqual(storedMac, actualMac)) {
-                    throw new IOException("wallet-state authentication failed");
-                }
-            } finally {
-                Arrays.fill(storedMac, (byte)0);
-                Arrays.fill(actualMac, (byte)0);
+            return decode(encoded, network, walletId, authKey);
+        } finally {
+            Arrays.fill(encoded, (byte)0);
+        }
+    }
+
+    private static State decode(byte[] encoded, BtqNetwork network, byte[] walletId, byte[] authKey)
+            throws IOException {
+        if(encoded.length != FILE_BYTES) throw new IOException("invalid wallet-state length");
+        byte[] body = Arrays.copyOf(encoded, BODY_BYTES);
+        byte[] storedMac = Arrays.copyOfRange(encoded, BODY_BYTES, FILE_BYTES);
+        byte[] actualMac = hmacSha256(authKey, body);
+        try {
+            if(!java.security.MessageDigest.isEqual(storedMac, actualMac)) {
+                throw new IOException("wallet-state authentication failed");
             }
+        } finally {
+            Arrays.fill(storedMac, (byte)0);
+            Arrays.fill(actualMac, (byte)0);
+        }
+        try {
             ByteBuffer buffer = ByteBuffer.wrap(body);
             byte[] magic = new byte[MAGIC.length];
             buffer.get(magic);
@@ -130,7 +224,7 @@ public final class BtqWalletStateStore {
             if(nextReceive < 0 || nextChange < 0) throw new IOException("invalid wallet-state index");
             return new State(nextReceive, nextChange);
         } finally {
-            Arrays.fill(encoded, (byte)0);
+            Arrays.fill(body, (byte)0);
         }
     }
 

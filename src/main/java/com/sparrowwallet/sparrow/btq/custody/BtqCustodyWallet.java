@@ -28,10 +28,12 @@ public final class BtqCustodyWallet implements AutoCloseable {
     private final BtqWatchOnlyCore.NodeStatus nodeStatus;
     private final BtqWatchOnlyCore.WalletStatus walletStatus;
     private byte[] masterSecret;
+    private byte[] authenticatedVault;
 
     private BtqCustodyWallet(BtqNetwork network, Path vaultFile, Path stateFile, BtqWatchOnlyCore core,
                              BtqWatchOnlyCore.NodeStatus nodeStatus,
-                             BtqWatchOnlyCore.WalletStatus walletStatus, byte[] masterSecret) {
+                             BtqWatchOnlyCore.WalletStatus walletStatus, byte[] masterSecret,
+                             byte[] authenticatedVault) {
         this.network = Objects.requireNonNull(network, "network");
         this.vaultFile = Objects.requireNonNull(vaultFile, "vaultFile").toAbsolutePath().normalize();
         this.stateFile = Objects.requireNonNull(stateFile, "stateFile").toAbsolutePath().normalize();
@@ -39,6 +41,7 @@ public final class BtqCustodyWallet implements AutoCloseable {
         this.nodeStatus = Objects.requireNonNull(nodeStatus, "nodeStatus");
         this.walletStatus = Objects.requireNonNull(walletStatus, "walletStatus");
         this.masterSecret = masterSecret;
+        this.authenticatedVault = authenticatedVault;
     }
 
     /** Create only the strict Qparrow v1 vault; no seed or wallet import is accepted. */
@@ -50,25 +53,56 @@ public final class BtqCustodyWallet implements AutoCloseable {
         }
         byte[] master = new byte[BtqCustodySpec.MASTER_SECRET_BYTES];
         random.nextBytes(master);
+        boolean vaultCreated = false;
         try {
             BtqSeedVault.create(vaultFile, network, master, password, random);
+            vaultCreated = true;
+            BtqWalletStateStore.initializeNew(stateFile, master, network);
+        } catch(IOException e) {
+            if(vaultCreated) Files.deleteIfExists(vaultFile.toAbsolutePath().normalize());
+            throw e;
         } finally {
             Arrays.fill(master, (byte)0);
         }
     }
 
+    /** Open a wallet session and take ownership of the supplied node configuration and credentials. */
     public static BtqCustodyWallet open(Path vaultFile, Path stateFile, BtqNetwork network,
                                         char[] password, BtqNodeConfig nodeConfig) throws IOException {
         Objects.requireNonNull(nodeConfig, "nodeConfig");
         if(nodeConfig.network() != network) {
+            nodeConfig.close();
             throw new IllegalArgumentException("vault and BTQ node networks must match");
         }
+        boolean ownershipTransferred = false;
         try(BtqSeedVault.UnlockedSeed unlocked = BtqSeedVault.open(vaultFile, network, password)) {
-            BtqWatchOnlyCore core = new BtqWatchOnlyCore(nodeConfig);
-            BtqWatchOnlyCore.NodeStatus nodeStatus = core.verifyNode();
-            BtqWatchOnlyCore.WalletStatus walletStatus = core.ensureWallet();
-            return new BtqCustodyWallet(network, vaultFile, stateFile, core, nodeStatus, walletStatus,
-                    unlocked.copyMasterSecret());
+            byte[] master = unlocked.copyMasterSecret();
+            byte[] authenticatedVault = unlocked.copyAuthenticatedEncoding();
+            BtqWatchOnlyCore core = null;
+            try {
+                BtqWalletStateStore.inspect(stateFile, master, network);
+                String suffix = "-" + BtqWalletStateStore.walletIdHex(master, network);
+                int maximumPrefix = 128 - suffix.length();
+                String prefix = nodeConfig.walletName().substring(0,
+                        Math.min(nodeConfig.walletName().length(), maximumPrefix));
+                BtqNodeConfig boundNodeConfig = nodeConfig.withWalletName(prefix + suffix);
+                core = new BtqWatchOnlyCore(boundNodeConfig);
+                BtqWatchOnlyCore.NodeStatus nodeStatus = core.verifyNode();
+                if(nodeStatus.initialBlockDownload()) {
+                    throw new IOException("BTQ Core is still synchronizing; custody wallet remains locked until synchronization completes");
+                }
+                BtqWatchOnlyCore.WalletStatus walletStatus = core.ensureWallet();
+                ownershipTransferred = true;
+                return new BtqCustodyWallet(network, vaultFile, stateFile, core, nodeStatus, walletStatus,
+                        master, authenticatedVault);
+            } catch(IOException | RuntimeException e) {
+                Arrays.fill(master, (byte)0);
+                Arrays.fill(authenticatedVault, (byte)0);
+                if(core != null) core.close();
+                throw e;
+            }
+        } finally {
+            if(!ownershipTransferred) nodeConfig.close();
         }
     }
 
@@ -83,12 +117,23 @@ public final class BtqCustodyWallet implements AutoCloseable {
     /** Export the encrypted vault and authenticated counters without exposing plaintext key material. */
     public synchronized void backup(Path target) throws IOException {
         ensureOpen();
-        BtqCustodyBackup.write(vaultFile, stateFile, target, network, masterSecret);
+        BtqCustodyBackup.write(vaultFile, authenticatedVault, stateFile, target, network, masterSecret);
     }
 
     /** Reconstruct a lost Core watch wallet from authenticated local counters, then rescan from genesis. */
     public synchronized RecoveryResult recoverWatchState() throws IOException {
         ensureOpen();
+        BtqWatchOnlyCore.NodeStatus currentNodeStatus = core.verifyNode();
+        if(currentNodeStatus.initialBlockDownload()) {
+            throw new IOException("BTQ Core is still synchronizing; recovery requires a fully synchronized node");
+        }
+        if(currentNodeStatus.pruned()) {
+            throw new IOException("genesis recovery requires an unpruned BTQ Core node");
+        }
+        BtqWatchOnlyCore.WalletStatus recoveryWallet = core.ensureWallet();
+        if(!walletStatus.name().equals(recoveryWallet.name())) {
+            throw new IOException("BTQ Core recovery wallet namespace changed during this session");
+        }
         BtqWalletStateStore.State state = BtqWalletStateStore.inspect(
                 stateFile, masterSecret, network);
         int registered = 0;
@@ -144,7 +189,7 @@ public final class BtqCustodyWallet implements AutoCloseable {
             for(int index = 0; index < limit; index++) {
                 if(Arrays.equals(script, BtqP2mrKeyPath.derive(masterSecret, network, chain, index).scriptPubKey())) {
                     return new Utxo(this,
-                            new BtqPsbtSigner.Input(watched.txid(), watched.vout(), chain, index), script,
+                            new BtqPsbtSigner.Input(watched.txid(), watched.vout(), watched.amountSats(), chain, index), script,
                             watched.address(), watched.amountSats(), watched.confirmations());
                 }
             }
@@ -222,7 +267,7 @@ public final class BtqCustodyWallet implements AutoCloseable {
 
     public synchronized BtqWatchOnlyCore.FinalizedTransaction finalize(BtqPsbtSigner.SignedPsbt signedPsbt) {
         ensureOpen();
-        return core.finalizePsbt(signedPsbt);
+        return core.finalizeSignedPsbt(signedPsbt);
     }
 
     public synchronized BtqWatchOnlyCore.BroadcastResult broadcast(
@@ -241,6 +286,11 @@ public final class BtqCustodyWallet implements AutoCloseable {
             Arrays.fill(masterSecret, (byte)0);
             masterSecret = null;
         }
+        if(authenticatedVault != null) {
+            Arrays.fill(authenticatedVault, (byte)0);
+            authenticatedVault = null;
+        }
+        core.close();
     }
 
     public record Payment(String address, long amountSats) {
