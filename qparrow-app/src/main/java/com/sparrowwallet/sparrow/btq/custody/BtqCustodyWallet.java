@@ -120,6 +120,16 @@ public final class BtqCustodyWallet implements AutoCloseable {
         BtqCustodyBackup.write(vaultFile, authenticatedVault, stateFile, target, network, masterSecret);
     }
 
+    /**
+     * Recovery escape hatch: export one derivation's ML-DSA-44 secret key as a BTQ Core
+     * Dilithium WIF, importable via {@code importdilithiumkey} to recover that single
+     * address's funds without Qparrow. The returned string is raw secret key material.
+     */
+    public synchronized String exportDilithiumWif(BtqCustodySpec.Chain chain, int index) {
+        ensureOpen();
+        return BtqKeyExport.exportDilithiumWif(masterSecret, network, chain, index);
+    }
+
     /** Reconstruct a lost Core watch wallet from authenticated local counters, then rescan from genesis. */
     public synchronized RecoveryResult recoverWatchState() throws IOException {
         ensureOpen();

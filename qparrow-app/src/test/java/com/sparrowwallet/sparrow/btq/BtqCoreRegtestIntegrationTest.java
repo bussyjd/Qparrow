@@ -88,6 +88,21 @@ class BtqCoreRegtestIntegrationTest {
                 BtqP2mrKeyPath.Address secondSource = wallet.nextAddress(
                         BtqCustodySpec.Chain.RECEIVE, "source-1");
                 BtqP2mrKeyPath.Address recipient = wallet.nextAddress(BtqCustodySpec.Chain.RECEIVE, "recipient");
+
+                // Recovery escape hatch: the exported Dilithium WIF must re-derive the SAME
+                // P2MR address inside BTQ Core via importdilithiumkey (funds recoverable
+                // without Qparrow). Verified against the real binary under test.
+                String receiveWif = wallet.exportDilithiumWif(BtqCustodySpec.Chain.RECEIVE, source.index());
+                nodeRpc.call("createwallet", "rescue_e2e", false, false, "", false, true, true, false);
+                BtqNodeConfig rescueConfig = new BtqNodeConfig(nodeConfig.rpcUri(), "rescue_e2e",
+                        BtqNetwork.REGTEST, BtqRpcCredentials.cookie(cookie), Duration.ofSeconds(60));
+                BtqRpcClient rescueRpc = new BtqRpcClient(rescueConfig).wallet();
+                JsonObject imported = rescueRpc.callObject("importdilithiumkey", receiveWif, "rescued", false);
+                assertEquals(source.address(), imported.get("address").getAsString(),
+                        "exported WIF must re-derive the same P2MR address in BTQ Core");
+                JsonObject rescuedInfo = rescueRpc.callObject("getaddressinfo", source.address());
+                assertTrue(rescuedInfo.get("ismine").getAsBoolean(),
+                        "rescued wallet must own the imported P2MR address");
                 minerRpc.callString("sendtoaddress", source.address(), new BigDecimal("0.15"));
                 minerRpc.callString("sendtoaddress", secondSource.address(), new BigDecimal("0.15"));
                 nodeRpc.callArray("generatetoaddress", 1, miningAddress);
