@@ -16,20 +16,6 @@ java {
     disableAutoTargetJvm()
 }
 
-def qparrowSharedSources = objects.sourceDirectorySet('qparrowShared', 'Qparrow shared sources')
-qparrowSharedSources.srcDir(rootProject.file('src/main/java'))
-qparrowSharedSources.include 'com/sparrowwallet/sparrow/Qparrow*.java'
-qparrowSharedSources.include 'com/sparrowwallet/sparrow/btq/**/*.java'
-
-sourceSets {
-    main {
-        java {
-            srcDirs = ['src/module']
-            source(qparrowSharedSources)
-        }
-    }
-}
-
 javafx {
     version = '26'
     modules = ['javafx.controls', 'javafx.graphics']
@@ -41,6 +27,18 @@ dependencies {
     implementation('org.jcommander:jcommander:3.0')
     implementation('org.slf4j:slf4j-api:2.0.17')
     implementation('ch.qos.logback:logback-classic:1.5.21')
+
+    testImplementation('org.junit.jupiter:junit-jupiter-api:5.14.1')
+    testRuntimeOnly('org.junit.jupiter:junit-jupiter-engine:5.14.1')
+    testRuntimeOnly('org.junit.platform:junit-platform-launcher')
+}
+
+// Main is a named JPMS module (for jlink/jpackage), but compile and run the
+// tests on the classpath (unnamed module) so JUnit needs no module-graph edits.
+tasks.named('compileTestJava') { modularity.inferModulePath = false }
+tasks.named('test') {
+    modularity.inferModulePath = false
+    useJUnitPlatform()
 }
 
 application {

@@ -1,6 +1,0 @@
-// Root-suite overlay: custody sources are compiled here only so Sparrow,
-// Drongo, and Lark remain upstream regression tripwires. The distributable
-// Qparrow application is the independent :qparrow-app module.
-dependencies {
-    implementation('org.bouncycastle:bcprov-jdk18on:1.82')
-}

@@ -566,5 +566,3 @@ extraJavaModuleInfo {
 kmpTorResourceFilterJar {
     keepTorCompilation("current","current")
 }
-
-apply from: 'qparrow.gradle'
