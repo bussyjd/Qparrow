@@ -1,4 +1,3 @@
-// Modified for Qparrow: independent application naming.
 package com.sparrowwallet.sparrow.net;
 
 import com.google.common.eventbus.Subscribe;
@@ -20,7 +19,6 @@ import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.BlockSummary;
 import com.sparrowwallet.sparrow.EventManager;
-import com.sparrowwallet.sparrow.SparrowWallet;
 import com.sparrowwallet.sparrow.event.*;
 import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.io.Server;
@@ -202,7 +200,7 @@ public class ElectrumServer {
     }
 
     public List<String> getServerVersion() throws ServerException {
-        return electrumServerRpc.getServerVersion(getTransport(), SparrowWallet.APP_NAME, SUPPORTED_VERSIONS);
+        return electrumServerRpc.getServerVersion(getTransport(), "Sparrow", SUPPORTED_VERSIONS);
     }
 
     public ServerFeatures getServerFeatures() throws ServerException {

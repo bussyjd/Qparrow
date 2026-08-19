@@ -1,70 +1,78 @@
 # Qparrow
 
-Qparrow is a node-backed desktop wallet for [Bitcoin Quantum](https://bitcoinquantum.com/). It is derived from [Sparrow Wallet](https://github.com/sparrowwallet/sparrow), but its current execution path is intentionally narrow: BTQ Core owns the wallet seed, ML-DSA keys, P2MR metadata, transaction signing, and PSBT finalization.
+Qparrow is a lean, forward-only Bitcoin Quantum wallet derived from
+[Sparrow Wallet](https://github.com/sparrowwallet/sparrow). Qparrow owns the
+encrypted master secret, ML-DSA-44 derivation, P2MR construction, transaction
+review, and signatures. BTQ Core is a private-key-disabled watch-only backend
+for chain data, PSBT construction, policy validation, and broadcast.
 
-This repository is an early development milestone. Do not use it with valuable funds without independent review.
+This is unreleased development software. Do not use it with valuable funds
+without independent cryptographic, application-security, and release review.
 
 ## Security boundary
 
-- Qparrow verifies the remote software identity and configured BTQ chain before loading or creating a wallet.
-- Receive addresses must be witness-v2 P2MR addresses returned by `getnewdilithiumaddress` and cross-checked with `getaddressinfo`.
-- Balances include only UTXOs whose address and script match BTQ Core's persisted P2MR metadata.
-- Sends accept only same-network P2MR destinations. The node constructs the transaction, Qparrow displays the exact amount, fee, change, source, destination, and unsigned txid, and BTQ Core signs only after confirmation.
-- Broadcast is fail-closed: a complete P2MR witness and successful `testp2mrtransaction` dry run are required first.
-- BTQ PSBTs remain opaque base64 in Qparrow so inherited Bitcoin-only parsers cannot drop BTQ fields `0x19`, `0x1a`, or `0x1b`.
-- Qparrow stores only public node connection metadata. RPC passwords and wallet secret material are not persisted.
-- Inherited Sparrow wallet files, terminal wallet mode, hardware signing, Electrum, Bitcoin key derivation, and offline signing are not reachable from the Qparrow launcher.
+- The only active entry point is `QparrowLauncher` → `QparrowDesktop` →
+  `btq.custody`. Inherited Sparrow wallets, Bitcoin signing, Electrum, hardware
+  signing, and terminal wallet flows are not initialized.
+- Qparrow creates a strict v1 encrypted vault using Argon2id and AES-256-GCM.
+  It accepts no Sparrow, BIP32/BIP39, xprv, Core-wallet, or prototype imports.
+- Core is verified as BTQ and as the selected network before a descriptor wallet
+  is created/loaded with `disable_private_keys=true`, `blank=true`.
+- Every receive/change index is authenticated and persisted before display.
+  Only the exact public P2MR tree and an `addr()` watch descriptor reach Core.
+- Every spend uses explicit user-selected inputs and P2MR-only payments/change.
+  Qparrow independently parses the entire PSBT before authorization, displays
+  its locally computed fee, reparses before signing, verifies every ML-DSA
+  signature locally, and requires default-policy mempool acceptance.
+- Qparrow strips witness from Core's returned finalized bytes, computes their
+  transaction ID locally, and requires it to equal the signed proposal before
+  any policy check or broadcast.
+- Encrypted backups contain both the vault and authenticated address counters.
+  Restore validates both before installing either and never replaces different
+  existing custody files.
+- Automatic heap dumps are disabled by the Qparrow build overlay.
 
-See [the Sparrow suitability and license assessment](docs/SPARROW_ASSESSMENT.md), [the architecture and threat boundary](docs/QPARROW_ARCHITECTURE.md), [the complete wallet reference map](docs/BTQ_WALLET_REFERENCE_MAP.md), and [the verified test matrix](docs/VERIFICATION.md) before changing wallet code.
+See [the architecture](docs/QPARROW_ARCHITECTURE.md),
+[wallet reference map](docs/BTQ_WALLET_REFERENCE_MAP.md),
+[Sparrow/license assessment](docs/SPARROW_ASSESSMENT.md), and
+[verification matrix](docs/VERIFICATION.md).
 
-## Requirements
+## Build and test
 
-- Java 25 or later
-- A locally controlled BTQ Core node from [`btq-ag/btq-core`](https://github.com/btq-ag/btq-core)
-- Descriptor wallet support in BTQ Core (SQLite)
-
-Clone with submodules:
-
-```bash
-git clone --recursive https://github.com/bussyjd/Qparrow.git
-cd Qparrow
-```
-
-Run all unit and inherited regression tests:
+Requirements are Java 25, the checked-out submodules, and an exact BTQ Core
+binary for the real integration gate.
 
 ```bash
 ./gradlew test
-```
 
-Run the real BTQ Core regtest integration proof:
-
-```bash
-BTQ_CORE_BIN=/absolute/path/to/btq-core/src/btqd ./gradlew test \
+BTQ_CORE_BIN=/absolute/path/to/btq-core/src/btqd \
+  ./gradlew :test \
   --tests com.sparrowwallet.sparrow.btq.BtqCoreRegtestIntegrationTest
-```
 
-Build the desktop package:
-
-```bash
-./gradlew jpackage
-```
-
-Run from source:
-
-```bash
 ./qparrow --network regtest
+./gradlew :qparrow-app:jpackageImage
 ```
 
-The UI defaults to regtest when there is no saved profile. Network choices are mainnet, testnet, signet, and regtest. Plain HTTP RPC is accepted only on a loopback address; remote nodes require HTTPS.
+The UI defaults to regtest. Plain HTTP RPC is loopback-only; remote connections
+must use HTTPS. Cookie authentication is preferred. Basic-auth passwords and
+vault passwords are session-only and are not written to the node profile.
 
-## Authentication
+## Custody operations
 
-Cookie authentication is the default. Qparrow suggests BTQ Core's standard cookie path for the selected operating system and network. Basic authentication is supported, but its password is memory-only and must be entered after each launch. RPC credentials embedded in a URI are rejected.
+1. Create a network-specific vault with a password of at least 12 characters.
+2. Unlock against a locally controlled BTQ Core node.
+3. Reserve a receive address, fund it, and refresh validated P2MR UTXOs.
+4. Create an encrypted `.qpbackup` after address use and replace it after each
+   new receive/change reservation. Restoring an old counter snapshot can reuse
+   addresses, so only the newest backup is safe without a recovery rescan.
+   After loss of Core's watch wallet, use **Rebuild Core watch** to register all
+   authenticated derivations from genesis and rescan without exposing keys.
+5. Select exact inputs, enter a P2MR destination, approve the locally validated
+   amount/fee/change, then let Qparrow sign and Core finalize/broadcast.
 
-## Current non-goals
+## License
 
-Standalone Qparrow seed custody, mnemonic import/export, hardware wallet support, and offline signing are deferred until the node-backed P2MR protocol layer has been independently proven. Bitcoin/Sparrow wallet files are not compatible with Qparrow.
-
-## License and attribution
-
-Qparrow is distributed under the Apache License 2.0. It is derived from Sparrow Wallet, Drongo, and Lark, also under Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Qparrow is an independent fork and is not endorsed by the Sparrow Wallet project.
+Qparrow is Apache License 2.0 software derived from Sparrow Wallet, Drongo, and
+Lark. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Qparrow is independent and is
+not endorsed by the Sparrow Wallet project. This is an engineering assessment,
+not legal advice; release counsel should review final branding and notices.

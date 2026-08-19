@@ -1,76 +1,51 @@
-# Qparrow milestone verification
+# Qparrow verification gates
 
-Verification date: 2026-08-18
+## Automated gates
 
-## Pinned inputs
+| Gate | Evidence |
+|---|---|
+| Strict P2MR address/script codec | `BtqP2mrAddressCodecTest` |
+| Network/RPC credential boundary | `BtqNodeConfigTest`, `BtqNodeProfileStoreTest` |
+| ML-DSA/P2MR derivation vectors | `BtqCustodyPrimitivesTest` |
+| Vault encryption, permissions, tamper, concurrent no-clobber | `BtqSeedVaultTest` |
+| Authenticated monotonic receive/change state | `BtqWalletStateStoreTest` |
+| Encrypted vault+counter backup/restore | `BtqCustodyBackupTest` |
+| Strict PSBT review/signing, exact intent, fee ceiling | `BtqPsbtSignerTest` |
+| BTQ identity, private-key-disabled wallet, typed UTXOs, funding/finalize/broadcast | `BtqWatchOnlyCoreTest` |
+| Exact BTQ Core receive/sign/default-policy/broadcast, node restart, watch-wallet loss and recovery | `BtqCoreRegtestIntegrationTest` |
+| Inherited upstream regression signal | root, Drongo, and Lark test suites |
 
-- Qparrow implementation commit: `bfbbb393`
-- Sparrow starting point: `b99b880c`
-- BTQ Core production baseline: `v0.4.4-testnet`, `e2d19e06`
-- Exact Bitcoin Core 26.0 ancestor: `44d8b13`
-- BTQ test-only follow-up: `5a7edd6b2` updates `feature_p2mr.py` to assert the current P2MR-only Dilithium error; it changes no production code
-- Java: Eclipse Temurin 25
-- BTQ build: descriptors/SQLite enabled, legacy BDB disabled
-
-## Qparrow and inherited Java surface
-
-Command:
+Run:
 
 ```bash
-BTQ_CORE_BIN=/absolute/path/to/btqd ./gradlew test --no-daemon
+./gradlew test
+
+BTQ_CORE_BIN=/absolute/path/to/btq-core/src/btqd \
+  ./gradlew :test \
+  --tests com.sparrowwallet.sparrow.btq.BtqCoreRegtestIntegrationTest
 ```
 
-Result:
+The integration test does not enable `acceptnonstdtxn`; a transaction must pass
+BTQ Core's default mempool policy. It proves the independent Java TapSighash,
+PSBT fields `0x19`/`0x1a`/`0x1b`, a 2,421-byte transaction signature item,
+Core finalization, mutation rejection, broadcast, confirmation, and reopen.
+It then stops Core, deletes only the temporary private-key-disabled watch
+wallet, restarts Core, reconstructs public P2MR metadata from authenticated
+counters with timestamp zero, rescans, and rediscovers the outputs.
 
-| Suite | Tests | Skipped | Failures | Errors |
-|---|---:|---:|---:|---:|
-| Qparrow/Sparrow root | 152 | 0 | 0 | 0 |
-| Drongo | 438 | 0 | 0 | 0 |
-| Lark | 1 | 0 | 0 | 0 |
-| Total | 591 | 0 | 0 | 0 |
+## Release-only gates
 
-The root total includes 26 Qparrow BTQ tests. The real-process test starts `btqd` on regtest and proves descriptor-wallet creation, P2MR address/script binding, quantum-only balance, BTQ PSBT signing/finalization, raw transaction signing, the 2,421-byte ML-DSA signature item, the 1,312-byte public key leaf, rejection after changing a byte inside the ML-DSA signature, successful mempool dry-run, broadcast, mining, and confirmation.
+Passing tests establishes an implementable development custody path, not a
+production security certification. Public releases additionally require:
 
-## BTQ Core C++ surface
-
-The selected Dilithium, P2MR, network-policy, wallet, change, descriptor, and PSBT Boost suites ran 139 cases with no errors.
-
-The relevant functional matrix ran 16 scripts. Twelve descriptor/consensus scripts passed. Four legacy-wallet variants were skipped because BDB was not compiled; these paths are not part of Qparrow's descriptor-only custody boundary. The test runner's aggregate result was `ALL ✓ Passed`.
-
-Covered scripts:
-
-```text
-feature_dilithium_activation.py
-feature_p2mr.py
-feature_p2mr_rpc.py
-wallet_all_types_simulation.py
-wallet_bip360_send_paths.py
-wallet_cross_chain_addresses.py
-wallet_dilithium_change.py
-wallet_dilithium_encrypted_restart_descriptors.py
-wallet_dilithium_psbt.py
-wallet_dilithium_psbt_multisig.py
-wallet_dilithium_send.py
-wallet_dilithium_signmessage.py
-```
-
-Skipped legacy-BDB variants:
-
-```text
-wallet_dilithium_encrypted_restart.py
-wallet_dilithium_hd_restore.py
-wallet_dilithium_import_restart.py
-wallet_dilithium_legacy_spend.py
-```
-
-## Artifact gate
-
-`./gradlew jpackageImage` completed successfully. The packaged launcher reports `Qparrow 0.1.0-dev`, opens the BTQ-only desktop, and contains the corrected `com.bitcoinquantum.merged.module` runtime options.
-
-The local macOS distribution is `build/jpackage/Qparrow-0.1.0.zip` (about 90 MB) with SHA-256:
-
-```text
-0ff28fcd8bd34e0432f889c93ca59159cdf696f277862f4d4d2503a70eeb3934
-```
-
-The zip is an unsigned development artifact. Public releases still require project-owned artwork, release signing/notarization, reproducibility checks, and independent security review.
+- independent review of derivation, FIPS 204 provider use, PSBT parser,
+  TapSighash, state/backup formats, and UI authorization boundary;
+- reproducible unsigned artifacts followed by platform code signing in a
+  separated release workflow, SBOM/dependency review, and provenance;
+- Windows/macOS/Linux ACL, swap/crash-dump, clipboard, accessibility, and
+  restore-interruption testing;
+- a documented stale-backup recovery/rescan procedure before address creation;
+- threat testing against a malicious authenticated RPC node and compromised
+  desktop, plus a decision on certificate pinning for remote HTTPS;
+- hardware-backed/offline signing only as a new versioned design, never a
+  compatibility shortcut.

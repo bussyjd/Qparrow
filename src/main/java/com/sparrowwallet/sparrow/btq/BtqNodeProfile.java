@@ -7,8 +7,8 @@ import java.time.Duration;
 import java.util.Objects;
 
 /**
- * Persistable public connection metadata. RPC passwords and wallet secrets are
- * intentionally absent; BTQ Core remains the sole key custodian.
+ * Persistable public connection metadata. RPC passwords and Qparrow custody
+ * secrets are intentionally absent; this record is not wallet data.
  */
 public record BtqNodeProfile(
         URI rpcUri,

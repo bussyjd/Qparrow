@@ -82,6 +82,27 @@ public final class BtqP2mrAddressCodec {
         return encode(network, toHex(program)).equals(normalized);
     }
 
+    /** Decode a canonical same-network P2MR address to OP_2 PUSH32 scriptPubKey. */
+    public static byte[] scriptPubKey(BtqNetwork network, String address) {
+        if(!isCanonicalAddress(network, address)) {
+            throw new IllegalArgumentException("address is not canonical same-network P2MR");
+        }
+        String normalized = address.toLowerCase(Locale.ROOT);
+        int separator = normalized.lastIndexOf('1');
+        String encoded = normalized.substring(separator + 1);
+        byte[] values = new byte[encoded.length()];
+        for(int i = 0; i < encoded.length(); i++) values[i] = (byte)CHARSET.indexOf(encoded.charAt(i));
+        byte[] program = convertBitsWithoutPadding(values, 1, values.length - 6, 5, 8);
+        if(program == null || program.length != 32) {
+            throw new IllegalArgumentException("address has an invalid P2MR witness program");
+        }
+        byte[] script = new byte[34];
+        script[0] = 0x52;
+        script[1] = 0x20;
+        System.arraycopy(program, 0, script, 2, program.length);
+        return script;
+    }
+
     private static List<Integer> convertBits(byte[] input, int fromBits, int toBits) {
         int accumulator = 0;
         int bits = 0;

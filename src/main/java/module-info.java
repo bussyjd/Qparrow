@@ -8,6 +8,7 @@ open module com.sparrowwallet.sparrow {
     requires javafx.graphics;
     requires javafx.swing;
     requires org.controlsfx.controls;
+    requires org.bouncycastle.provider;
     requires org.fxmisc.richtext;
     requires tornadofx.controls;
     requires com.sparrowwallet.drongo;

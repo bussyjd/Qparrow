@@ -1,61 +1,120 @@
-# Qparrow node-backed architecture
+# Qparrow custody architecture
 
-## Milestone boundary
+## Forward-only wallet format
 
-The first Qparrow milestone proves BTQ's protocol path while BTQ Core retains custody. Qparrow is an intent, validation, and display client; it is not a key store.
+Qparrow v1 accepts no compatibility inputs. Its only derivation is:
 
 ```text
-User confirmation
-      |
-      v
-Qparrow UI -> typed RPC boundary -> authenticated BTQ Core wallet -> ML-DSA/P2MR consensus
-     |                 |                         |
- public profile    opaque tx/PSBT          seed + secret keys
- only              payloads only           never leave node
+32-byte master secret
+  → HKDF-SHA512(network, receive/change, index)
+  → 32-byte ML-DSA-44 seed
+  → 1312-byte public key
+  → <pubkey> OP_CHECKSIGDILITHIUM leaf
+  → P2MR witness-v2 output
 ```
 
-The active launcher is `QparrowDesktop`. It does not initialize Sparrow's `AppServices`, `Storage` wallet databases, Drongo `Wallet`/`PSBT`, Electrum services, or Lark hardware transports. Those inherited sources remain in the tree temporarily so upstream regression tests continue to expose accidental breakage; they are outside the Qparrow runtime boundary.
+There is no BIP32, BIP39, xprv, ECDSA/Schnorr, Taproot, legacy Dilithium,
+descriptor private key, or pre-P2MR branch. A future design gets a new explicit
+version, not another parser in the v1 signing path.
 
-## Trust decisions
+## Responsibility split
 
-1. `BtqNodeConfig` rejects URI credentials, non-HTTP(S) transports, and plaintext remote HTTP.
-2. `BtqCoreWallet.verifyNode` requires a BTQ-identifying subversion and an exact chain match.
-3. `ensureWallet` creates/loads a named descriptor wallet with private keys enabled. BTQ Core owns the wallet database and all Dilithium material.
-4. `newQuantumAddress` requests type `p2mr`, requires the chain-specific `hrp1z` prefix and exact `OP_2 PUSH32 <merkle-root>` script form, then cross-checks `isdilithium`, `solvable`, and `scriptPubKey` through `getaddressinfo`.
-5. `getQuantumBalance` lists only BTQ Core P2MR metadata and requires every returned UTXO to match both its address and script. Ordinary wallet outputs are excluded.
-6. `createSpend` rejects non-P2MR destinations before RPC. BTQ Core selects the P2MR input and reports input amount, effective fee, change, and unsigned txid.
-7. The UI shows that material before authorization. `signp2mrtransaction` is not called until confirmation.
-8. `broadcast` requires `complete=true`, then `testp2mrtransaction.allowed=true`, then a broadcast txid identical to the dry-run txid.
-9. PSBTs are transported as opaque strings. Qparrow does not decode or rewrite BTQ input fields.
+```text
+Qparrow-owned                         BTQ Core-owned
+--------------------------------     ------------------------------
+encrypted master-secret vault        chain and mempool data
+receive/change derivation             watch-only scan/index
+authenticated counters          <--> exact public P2MR metadata
+coin/outpoint selection               unsigned PSBT serialization
+recipient/change/fee approval         fee estimation
+strict PSBT parser + TapSighash        finalization/default policy
+ML-DSA signing + local verify          broadcast transport
+```
 
-These checks are fail-closed consistency checks, not remote-node attestation. The authenticated BTQ Core endpoint remains inside the trust boundary and can lie about any RPC result. Qparrow should be used with a locally controlled node for this milestone. Remote HTTPS relies on the operating system trust store and does not yet support certificate pinning.
+Core is verified as BTQ and the selected chain, then constrained to a blank
+descriptor wallet with private keys disabled. Every local tree is cross-checked
+against Core's returned address, script, and root and paired with an `addr()`
+descriptor. Core never receives a seed or signing capability.
 
-## Secret handling
+## Components
 
-`btq-node.properties` contains only URI, network, wallet name, auth mode, timeout, RPC username, and cookie path. It is written atomically with owner-only POSIX permissions where supported. It never contains an RPC password, authorization header, seed, private key, extended key, mnemonic, or PSBT.
+| Component | Responsibility |
+|---|---|
+| `BtqCustodySpec` | Strict network/chain/index-separated v1 derivation |
+| `BtqMldsa44` | ML-DSA-44 key/sign/verify and exact wire sizes |
+| `BtqP2mrKeyPath` | Leaf, TapLeaf root, control block, script, address |
+| `BtqSeedVault` | Argon2id + AES-256-GCM encrypted master secret |
+| `BtqWalletStateStore` | HMAC-authenticated, pre-reserved counters |
+| `BtqCustodyBackup` | Encrypted vault + authenticated state container |
+| `BtqSpendIntent` | Exact payments/change/absolute fee ceiling |
+| `BtqPsbtSigner` | Independent bounded PSBT-v0 review and signing |
+| `BtqWatchOnlyCore` | Typed watch-only Core and broadcast boundary |
+| `BtqCustodyWallet` | Locked session facade used by the UI |
 
-Cookie content is read on each RPC call, allowing BTQ Core to rotate it. Basic-auth passwords are copied into an in-memory credential provider and are not serialized. A later hardening milestone should add explicit memory destruction when a session disconnects.
+## Receive and recovery invariants
 
-Qparrow currently creates a Core wallet without a wallet passphrase because it does not yet implement a safe unlock/session-expiry flow. Protect the BTQ data directory with host access controls and encrypted storage; wallet encryption support is required before a production release.
+An index is written before its address is displayed. Crashes can create gaps
+but normal operation cannot reuse an index. State is wallet/network-bound,
+owner-only where supported, locked, atomically replaced, and HMAC-authenticated.
 
-## Unsupported paths
+The `.qpbackup` format contains the already encrypted vault plus authenticated
+counters. Restore authenticates both in temporary files before installation,
+does not overwrite different files, and is retry-safe after a partial install.
+An old valid backup is indistinguishable from a rollback: users must keep the
+newest backup. Qparrow can rebuild a lost Core watch wallet by registering every
+counter-covered derivation with timestamp zero and rescanning from genesis. A
+production release must still add stale-snapshot detection and advance beyond
+any derivations created after an old backup before permitting new addresses.
 
-Until standalone custody is a separately reviewed milestone, the Qparrow launcher rejects or omits:
+## Authorization and signing invariants
 
-- Sparrow `.db` wallet open/import/export;
-- BIP39, SLIP39, xprv, seed QR, and descriptor key import;
-- Drongo transaction signing and PSBT parsing;
-- Lark hardware wallet discovery/signing;
-- Electrum/public-server connectivity;
-- terminal wallet mode;
-- Bitcoin or legacy Dilithium receive destinations;
-- non-P2MR send destinations;
-- offline/multisigner PSBT editing.
+Core receives only explicit selected outpoints, a fresh local P2MR change
+address, and the exact 4,402-weight single-key input bound. Before the user sees
+the confirmation, Qparrow independently proves:
 
-## Testing gates
+1. canonical bounded PSBT v0 and transaction v2;
+2. every input is the exact approved txid/vout and local derivation;
+3. every witness UTXO and P2MR leaf/control/root matches that derivation;
+4. no input is finalized or pre-signed and all use `SIGHASH_ALL`;
+5. every output is P2MR and exact approved payments are present;
+6. at most one positive output is the fresh local change script;
+7. locally computed fee is nonnegative and below the absolute ceiling.
 
-The unit suite scripts every RPC path and asserts node versus wallet endpoint scoping, parameter order, error mapping, address/script invariants, P2MR-only balances and destinations, incomplete-signature refusal, mempool rejection, txid consistency, opaque PSBT preservation, profile secrecy, and transport validation.
+Only that local fee is displayed. After approval the immutable PSBT is parsed
+again, the computed fee must match the reviewed fee, and each ML-DSA signature
+must verify locally before insertion. Core must finalize it and default
+`testmempoolaccept` policy must allow it before `sendrawtransaction`. The
+returned finalized bytes are parsed locally and stripped of witness; their
+double-SHA256 transaction id must equal the id independently computed from the
+locally signed proposal before another RPC is made, preventing finalization
+substitution even if Core lies in its JSON response.
 
-`BtqCoreRegtestIntegrationTest` launches a real `btqd`, mines funds, creates and persists ML-DSA P2MR addresses, signs both raw and PSBT paths, checks the 2,421-byte signature stack item and the leaf script's `PUSHDATA2`-encoded 1,312-byte public key, proves a mutated witness is rejected, broadcasts the valid transaction, mines it, and verifies confirmation.
+BTQ PSBT fields are:
 
-Every change must also keep the complete inherited Sparrow, Drongo, and Lark test surfaces green until those components are intentionally removed.
+| Type | Key | Value |
+|---|---|---|
+| `0x19` | type + control block | leaf script + leaf version |
+| `0x1a` | type | 32-byte P2MR root |
+| `0x1b` | type + 1312-byte public key + leaf hash | 2420-byte signature + sighash byte |
+
+## Secret and session handling
+
+Vault v1 fixes Argon2id at 64 MiB, three iterations, one lane, and encrypts with
+AES-256-GCM using the complete header as AAD. Creation uses a per-vault lock and
+never replaces an existing file. Opening rejects symlinks, broad POSIX
+permissions, wrong network/version/length, and authentication failures.
+
+The UI clears password arrays and temporary key buffers where Java permits,
+locks after ten minutes, serializes custody operations, closes displaced/error
+sessions, and disables automatic heap dumps through `qparrow.gradle`. A managed
+JVM cannot promise locked native memory; swap, instrumentation, screen capture,
+provider internals, and OS crash handling remain release hardening.
+
+## Upstream quarantine
+
+The Qparrow launcher and UI are additive. Sparrow's launcher/controllers stay
+upstream. A minimal `qparrow-app` module packages only Qparrow/BTQ sources and
+their direct runtime dependencies; the full Sparrow graph is test-only. BTQ
+payloads never enter Drongo's Bitcoin wallet/transaction/PSBT, Electrum, HWI,
+or terminal code. The obsolete Core-key custody class and tests are deleted,
+so there is no fallback path.

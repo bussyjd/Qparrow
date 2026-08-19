@@ -6,7 +6,7 @@ args="${args%"${args##*[![:space:]]}"}"
 
 if [ -n "$args" ]
 then
-  ./gradlew run --args="$args"
+  ./gradlew :qparrow-app:run --args="$args"
 else
-  ./gradlew run
+  ./gradlew :qparrow-app:run
 fi

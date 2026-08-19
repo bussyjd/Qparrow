@@ -1,124 +1,125 @@
 # BTQ wallet reference map
 
-This map is the required starting point for Qparrow wallet changes. It is anchored to BTQ Core `v0.4.4-testnet` production code at `e2d19e06` and its exact Bitcoin Core 26.0 ancestor `44d8b13`. Test-only commit `5a7edd6b2` corrects one stale expected error string without changing production behavior. Revalidate the paths and behavior whenever the BTQ Core pin changes.
+This map is the mandatory anchor for Qparrow wallet changes. It is based on BTQ
+Core `v0.4.4-testnet` production commit `e2d19e06` and exact Bitcoin Core 26.0
+ancestor `44d8b13`. The working BTQ branch also contains test-only commit
+`5a7edd6b2`. Revalidate this map whenever the Core pin changes.
 
-## Protocol facts that change wallet assumptions
+## Protocol facts that invalidate Bitcoin wallet assumptions
 
-| Boundary | BTQ behavior | Qparrow consequence |
+| Boundary | BTQ behavior | Qparrow rule |
 |---|---|---|
-| Receive output | P2MR witness v2, Bech32m, `OP_2 PUSH32 <merkle root>` | Require `hrp1z` and a 34-byte scriptPubKey |
-| Signing key | ML-DSA-44: 1,312-byte public key, 2,560-byte secret key | Never fit Bitcoin key-size assumptions; node custody only |
-| Signature | 2,420 bytes plus one sighash byte in the witness | Validate real witness sizes in integration tests |
-| Script element | BTQ raises the relevant element allowance to 15,000 bytes | Do not use Bitcoin's 520-byte parsing/policy assumptions |
-| Derivation | BTQ Dilithium HD derivation is custom and hardened-only | Do not derive with Drongo/BIP32 |
-| Descriptors | P2MR metadata is wallet-owned and not descriptor-backed | Use `p2mr_id`, `listp2mr`, and `getp2mrinfo` |
-| PSBT | Input types `0x19` Dilithium partial sig, `0x1a` leaf script, `0x1b` internal key | Preserve base64 opaquely; BTQ Core processes/finalizes |
-| Serialization | Bitcoin transaction serialization is inherited | Raw hex can be relayed opaquely, but not semantically parsed by Drongo |
-| Network policy | main/regtest are P2MR-only; the public testnet has transitional legacy behavior | Qparrow enforces P2MR on every network |
+| Receive | P2MR witness v2, Bech32m, `OP_2 PUSH32 <root>` | Only chain-specific `hrp1z`, exact 34-byte script |
+| Key | ML-DSA-44: 32-byte seed, 1312-byte public key, 2560-byte expanded private key | Never use ECKey/BIP32/Drongo keystores |
+| Signature | 2420 bytes plus one sighash byte | Bound parsers and fee estimates to the real size |
+| Leaf | `<1312-byte key> OP_CHECKSIGDILITHIUM` with `PUSHDATA2` | One v1 policy; no legacy script templates |
+| Script limits | BTQ raises relevant element limits to 15000 bytes | Never inherit Bitcoin's 520-byte assumption |
+| Derivation | Core Dilithium HD is custom/hardened; Qparrow v1 is a separate network-bound scheme | No compatibility derivation or Core seed import |
+| Watch state | P2MR tree metadata is not descriptor-derived | Register exact tree and pair with `addr()` for scanning |
+| PSBT | `0x19` leaf, `0x1a` root, `0x1b` ML-DSA script signature | Use only the isolated strict BTQ parser/signer |
+| Sighash | BIP341-style `TapSighash`, P2MR script-path extension flag | Single SHA256 component hashes, tagged final hash, `SIGHASH_ALL` only |
+| Weight | BTQ `WITNESS_SCALE_FACTOR=16` | Single-key input upper bound 4402; minimum empty input 657 |
+| Policy | P2MR-only target despite transitional development networks | Reject every classical input/output path in custody |
 
-## BTQ Core production code
+## Authoritative BTQ Core production paths
 
-| Concern | Authoritative files |
+| Concern | Files |
 |---|---|
-| ML-DSA implementation, sizes, seed expansion, sign/verify | `src/crypto/dilithium_key.{h,cpp}`, `src/crypto/dilithium_pubkey.cpp`, `src/crypto/dilithium_wrapper.{h,c}`, `src/crypto/dilithium/ref/` |
-| P2MR leaf construction and recognition | `src/script/dilithium_leaf.{h,cpp}`, `src/script/solver.cpp`, `src/script/standard.cpp` |
-| Witness-v2 execution and Dilithium opcode verification | `src/script/interpreter.{h,cpp}`, `src/script/script.{h,cpp}`, `src/script/sign.{h,cpp}` |
-| Consensus/policy limits and activation | `src/consensus/`, `src/policy/policy.{h,cpp}`, `src/kernel/chainparams.cpp`, `src/validation.cpp` |
-| Network HRPs and activation regimes | `src/kernel/chainparams.cpp`, `src/chainparamsbase.cpp` |
-| Dilithium key encoding/import/export | `src/key_io.{h,cpp}`, `src/outputtype.{h,cpp}`, `src/rpc/output_script.cpp` |
-| Wallet key managers and persistence | `src/wallet/scriptpubkeyman.{h,cpp}`, `src/wallet/wallet.{h,cpp}`, `src/wallet/walletdb.{h,cpp}` |
-| P2MR metadata, UTXO selection, construction, signing | `src/wallet/p2mr.{h,cpp}` |
-| Receive/import/sign-message RPCs | `src/wallet/rpc/dilithium.cpp` |
-| P2MR list/info/create/sign/test RPCs | `src/wallet/rpc/p2mr.cpp` |
-| RPC registration and wallet scoping | `src/wallet/rpc/wallet.cpp`, `src/wallet/rpc/util.{h,cpp}` |
-| PSBT typed fields and serialization | `src/psbt.{h,cpp}`, `src/psbt_dilithium.{h,cpp}` |
-| Wallet PSBT filling and finalization | `src/wallet/wallet.cpp`, `src/wallet/rpc/spend.cpp`, `src/node/psbt.cpp`, `src/rpc/rawtransaction.cpp` |
-| JSON amount conversion and CLI coercion | `src/rpc/util.cpp`, `src/rpc/client.cpp` |
+| ML-DSA implementation and sizes | `src/crypto/dilithium_key.{h,cpp}`, `src/crypto/dilithium_pubkey.cpp`, `src/crypto/dilithium_wrapper.{h,c}`, `src/crypto/dilithium/ref/` |
+| P2MR leaf policy | `src/script/dilithium_leaf.{h,cpp}`, `src/script/solver.cpp`, `src/script/standard.cpp` |
+| P2MR execution and sighash | `src/script/interpreter.{h,cpp}`, `src/script/script.{h,cpp}`, `src/script/sign.{h,cpp}` |
+| Consensus/policy/activation | `src/consensus/`, `src/policy/policy.{h,cpp}`, `src/kernel/chainparams.cpp`, `src/validation.cpp` |
+| HRPs and chain identity | `src/kernel/chainparams.cpp`, `src/chainparamsbase.cpp` |
+| Wallet persistence/key managers | `src/wallet/scriptpubkeyman.{h,cpp}`, `src/wallet/wallet.{h,cpp}`, `src/wallet/walletdb.{h,cpp}` |
+| P2MR metadata and signing providers | `src/wallet/p2mr.{h,cpp}` |
+| P2MR RPCs | `src/wallet/rpc/p2mr.cpp`, `src/wallet/rpc/dilithium.cpp`, `src/wallet/rpc/wallet.cpp` |
+| PSBT wire types | `src/psbt.{h,cpp}`, `src/psbt_dilithium.{h,cpp}` |
+| Funding/filling/finalization | `src/wallet/rpc/spend.cpp`, `src/wallet/wallet.cpp`, `src/node/psbt.cpp`, `src/rpc/rawtransaction.cpp` |
 
-## Qparrow RPC contract
+## Qparrow custody-to-Core contract
 
-| Flow | RPCs | Qparrow class |
+| Flow | Core RPCs | Qparrow owner |
 |---|---|---|
-| Identity | `getnetworkinfo`, `getblockchaininfo` | `BtqCoreWallet.verifyNode` |
-| Wallet lifecycle | `listwallets`, `listwalletdir`, `loadwallet`, `createwallet`, `getwalletinfo` | `BtqCoreWallet.ensureWallet` |
-| Receive | `getnewdilithiumaddress`, `getaddressinfo` | `BtqCoreWallet.newQuantumAddress` |
-| Metadata/balance | `listp2mr`, `listunspent` | `listQuantumAddresses`, `getQuantumBalance` |
-| Raw spend | `createp2mrspend`, `signp2mrtransaction`, `testp2mrtransaction`, `sendrawtransaction` | `createSpend`, `signSpend`, `dryRun`, `broadcast` |
-| PSBT | `walletprocesspsbt`, `combinepsbt`, `finalizepsbt` | `processPsbt`, `combinePsbts`, `finalizePsbt` |
-| Node/profile transport | JSON-RPC 2.0 over authenticated HTTP(S) | `BtqNodeConfig`, `BtqRpcCredentials`, `BtqHttpRpcTransport`, `BtqRpcClient`, `BtqNodeProfileStore` |
+| Wallet lifecycle | `listwallets`, `listwalletdir`, `loadwallet`, `createwallet`, `getwalletinfo` | `BtqWatchOnlyCore.ensureWallet` |
+| Public registration | `getnewp2mraddress`, `getdescriptorinfo`, `importdescriptors`, `getaddressinfo` | `BtqWatchOnlyCore.registerAddress` |
+| UTXOs | `listunspent` | `BtqWatchOnlyCore.listUtxos` validates amount/address/script; Qparrow resolves chain/index |
+| Funding | `walletcreatefundedpsbt` with explicit inputs, input weight, quantum change, `add_inputs=false` | `BtqWatchOnlyCore.createFundedPsbt` |
+| Signing | no RPC | `BtqPsbtSigner` |
+| Final policy gate | `finalizepsbt`, local raw-tx txid binding, `testmempoolaccept` | `BtqWatchOnlyCore.finalizePsbt` |
+| Broadcast | `sendrawtransaction` | Exact finalized txid match in `BtqWatchOnlyCore.broadcast` |
+| Watch recovery | `getnewp2mraddress`, `importdescriptors` timestamp 0, `rescanblockchain` | Authenticated counters drive public-only reconstruction |
 
-## Qparrow-owned wallet surface
+Core is an authenticated public-data and transaction-construction dependency,
+not the custody boundary. The local signer treats every PSBT field as hostile.
 
-This is the complete milestone-owned implementation inventory. A change outside these paths must explain why the inherited boundary is being crossed.
+## Qparrow-owned code surface
 
-| File | Responsibility |
+| Path | Responsibility |
 |---|---|
-| `src/main/java/com/sparrowwallet/sparrow/QparrowDesktop.java` | Only active desktop scene; connect, receive, P2MR-only balance, review, sign and broadcast intent |
-| `btq/BtqNetwork.java` | Exact RPC chain names, HRPs, and default ports |
-| `btq/BtqAuthMode.java` | Cookie/basic/none selection |
-| `btq/BtqRpcCredentials.java` | Per-request cookie reload and memory-only basic authentication |
-| `btq/BtqNodeConfig.java` | URI, endpoint, loopback-HTTP, wallet-name, network, and timeout validation |
-| `btq/BtqNodeProfile.java` | Persistable public connection metadata model |
-| `btq/BtqNodeProfileStore.java` | Atomic non-secret profile persistence and permission hardening |
-| `btq/BtqRpcTransport.java` | Testable transport seam |
-| `btq/BtqHttpRpcTransport.java` | Redirect-free Java HTTP JSON transport |
-| `btq/BtqRpcClient.java` | JSON-RPC request IDs, endpoint scoping, result typing, and errors |
-| `btq/BtqRpcException.java` | Sanitized method/code failure type |
-| `btq/BtqP2mrAddressCodec.java` | Independent Bech32m witness-v2 encode/validation |
-| `btq/BtqCoreWallet.java` | Descriptor wallet lifecycle and all allowed BTQ wallet RPC workflows |
+| `btq/BtqNetwork.java` | Exact chain names, HRPs, RPC defaults |
+| `btq/BtqP2mrAddressCodec.java` | Independent Bech32m/P2MR encode, validate, decode |
+| `btq/BtqNodeConfig.java`, `BtqRpc*.java` | Authenticated typed RPC transport |
+| `btq/custody/BtqCustodySpec.java` | New v1 derivation contract |
+| `btq/custody/BtqMldsa44.java` | ML-DSA boundary |
+| `btq/custody/BtqP2mrKeyPath.java` | Single-key P2MR commitment |
+| `btq/custody/BtqSeedVault.java` | Encrypted seed-at-rest format |
+| `btq/custody/BtqWalletStateStore.java` | Authenticated address reservation state |
+| `btq/custody/BtqCustodyBackup.java` | Encrypted vault + authenticated counter backup/restore |
+| `btq/custody/BtqSpendIntent.java` | User-approved outputs and fee ceiling |
+| `btq/custody/BtqPsbtSigner.java` | Strict parser, validation, sighash, signing |
+| `btq/custody/BtqWatchOnlyCore.java` | Public-only Core adapter |
+| `btq/custody/BtqCustodyWallet.java` | Lean application facade |
+| `QparrowLauncher.java`, `QparrowDesktop.java` | Isolated custody-only lifecycle and authorization UI |
+| `qparrow-app/` | Minimal distributable module; excludes the Sparrow/Drongo wallet graph |
 
-The matching tests are all files under `src/test/java/com/sparrowwallet/sparrow/btq/`. `BtqCoreRegtestIntegrationTest` is the authoritative end-to-end proof; the remaining files test individual trust-boundary failures.
+Any custody change outside these paths must justify crossing the inherited
+boundary. Inherited Drongo `Wallet`, `Keystore`, `Transaction`, and `PSBT`
+types; Sparrow storage/DAO code; Electrum; Payjoin; hardware-wallet transports;
+and Bitcoin import/export screens are prohibited from receiving BTQ secrets or
+payloads.
 
-## BTQ Core wallet test surface
+## No-backward-compatibility rule
 
-These tests are directly relevant and should run for wallet/protocol changes:
+Custody v1 does not read or reproduce:
 
-- `test/functional/feature_p2mr.py`
-- `test/functional/feature_p2mr_rpc.py`
-- `test/functional/feature_dilithium_activation.py`
-- `test/functional/wallet_bip360_send_paths.py`
-- `test/functional/wallet_dilithium_send.py`
-- `test/functional/wallet_dilithium_change.py`
-- `test/functional/wallet_dilithium_psbt.py`
-- `test/functional/wallet_dilithium_psbt_multisig.py`
-- `test/functional/wallet_dilithium_hd_restore.py`
-- `test/functional/wallet_dilithium_import_restart.py`
-- `test/functional/wallet_dilithium_encrypted_restart.py`
-- `test/functional/wallet_dilithium_encrypted_restart_descriptors.py`
-- `test/functional/wallet_dilithium_signmessage.py`
-- `test/functional/wallet_cross_chain_addresses.py`
-- `test/functional/wallet_all_types_simulation.py`
-- `test/functional/wallet_dilithium_legacy_spend.py`
-- `src/test/dilithium_*_tests.cpp`
-- `src/test/p2mr_*_tests.cpp`
-- `src/test/psbt_*_tests.cpp`
+- Sparrow wallet databases, keystores, descriptors, BIP39/SLIP39, xprv/xpub;
+- BTQ Core private-key wallets or Core Dilithium HD derivation;
+- legacy Dilithium addresses or scripts;
+- earlier Qparrow node-custody profiles as wallet data;
+- classical inputs, recipients, or change;
+- Taproot, multisig, Payjoin, or hardware-signing PSBT fields.
 
-## Inherited Sparrow surfaces: keep out of the runtime
+Reject unknown versions and unsupported policy. Do not add fallback parsers to
+make development artifacts load. If a format is intentionally replaced before
+release, increment or replace the format and update its vectors/tests directly.
 
-The following areas encode classical Bitcoin assumptions. They remain useful as upstream regression tests but must not receive BTQ payloads or secrets:
+## Required verification
 
-| Inherited surface | Representative paths | Status in Qparrow milestone |
-|---|---|---|
-| Wallet model, seed/keystore, coin selection | `drongo/.../wallet/Wallet.java`, `Keystore.java`, `DeterministicSeed.java`, `WalletTransaction.java`, `*UtxoSelector.java` | Not initialized |
-| Transaction and witness parsing/signing | `drongo/.../protocol/Transaction*.java`, `TransactionWitness.java`, `TransactionSignature.java` | BTQ raw hex stays opaque |
-| PSBT parsing/signing/finalization | `drongo/.../psbt/PSBT*.java`, `FinalizingPSBTWallet.java` | BTQ base64 stays opaque |
-| Hardware wallets | `lark/...`, Sparrow device/keystore dialogs | Not initialized |
-| Sparrow wallet persistence | `src/main/.../io/Storage.java`, database migrations/DAOs | Used only to locate Qparrow config home; no wallet DB is opened |
-| Electrum/history/broadcast | `src/main/.../net/ElectrumServer*.java`, `AppServices.java` | Not initialized |
-| Desktop wallet controllers | `AppController.java`, `WalletController.java`, transaction tabs/dialogs | Not launched |
-| Terminal wallet | `terminal/SparrowTerminal.java`, `terminal/wallet/` | Launcher rejects `--terminal` |
-| Import/export and mnemonics | `keystoreimport/`, `control/*Keystore*`, `control/*WalletImport*` | Not launched |
-
-The audit is regenerated with these searches from the repository root:
+Qparrow:
 
 ```bash
-rg -l 'Wallet|Keystore|PSBT|Transaction|Electrum|HardwareWallet|Seed|Mnemonic' src/main/java drongo/src/main/java lark/src/main/java
-rg --files src/test drongo/src/test lark/src/test
-rg -n 'SparrowDesktop|AppServices|SparrowTerminal|WalletController|ElectrumServer|Device' src/main/java/com/sparrowwallet/sparrow/SparrowWallet.java src/main/java/com/sparrowwallet/sparrow/QparrowDesktop.java
+./gradlew :test --tests 'com.sparrowwallet.sparrow.btq.custody.*'
+BTQ_CORE_BIN=/absolute/path/to/btqd \
+  ./gradlew :test --tests com.sparrowwallet.sparrow.btq.BtqCoreRegtestIntegrationTest
+./gradlew test
+./gradlew :qparrow-app:jpackageImage
 ```
 
-The last command must return no inherited runtime initialization from either active launcher class. Mere type names in comments are acceptable; constructor calls, static service access, event registration, wallet file opening, and parser invocation are not.
+BTQ Core wallet/protocol changes should run the directly affected unit and
+functional surfaces, including `feature_p2mr*`, `wallet_dilithium_psbt*`,
+`wallet_dilithium_change.py`, `wallet_bip360_send_paths.py`, and
+`wallet_fundrawtransaction.py`. A failure before the edited case must be
+triaged separately rather than treated as proof that the edited case ran.
 
-## Review rule
+## Review checklist
 
-Any proposal that moves an operation from BTQ Core into Qparrow must identify its affected layer (consensus, policy, wallet, network, UI), cite the authoritative BTQ files above, add negative/adversarial tests, and explain why Bitcoin-sized keys, signatures, script elements, descriptors, derivation, and PSBT behavior do not invalidate the implementation. Standalone key custody is a separate milestone, not an incremental UI feature.
+Every wallet PR must state:
+
+1. affected layer: consensus, policy, wallet, network, UI, or custody;
+2. exact BTQ Core authority and pinned commit;
+3. whether input/output script, key, signature, weight, derivation, or PSBT
+   assumptions changed;
+4. negative tests for node substitution, malformed data, fee/output changes,
+   and wrong network/version;
+5. whether secrets cross the isolated custody package;
+6. upstream Sparrow files touched and why the seam could not remain isolated.

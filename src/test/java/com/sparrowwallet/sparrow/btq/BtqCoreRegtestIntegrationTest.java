@@ -5,6 +5,11 @@ package com.sparrowwallet.sparrow.btq;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.sparrowwallet.sparrow.btq.custody.BtqCustodySpec;
+import com.sparrowwallet.sparrow.btq.custody.BtqCustodyWallet;
+import com.sparrowwallet.sparrow.btq.custody.BtqP2mrKeyPath;
+import com.sparrowwallet.sparrow.btq.custody.BtqPsbtSigner;
+import com.sparrowwallet.sparrow.btq.custody.BtqWatchOnlyCore;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -13,25 +18,28 @@ import java.math.BigDecimal;
 import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.Comparator;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-/** Real-process proof that Qparrow's opaque RPC flow produces and verifies ML-DSA P2MR witnesses. */
+/** Real-process custody proof against the exact BTQ Core binary under test. */
 @Tag("btq-integration")
 class BtqCoreRegtestIntegrationTest {
     @TempDir
     Path temporaryDirectory;
 
     @Test
-    void nodeBackedP2mrAndPsbtFlowsVerifyAgainstBtqCore() throws Exception {
+    void localCustodySurvivesRestartAndBroadcastsAValidatedMldsaP2mrSpend() throws Exception {
         String binarySetting = System.getenv("BTQ_CORE_BIN");
-        assumeTrue(binarySetting != null && !binarySetting.isBlank(), "Set BTQ_CORE_BIN to run the real BTQ Core integration test");
+        assumeTrue(binarySetting != null && !binarySetting.isBlank(),
+                "Set BTQ_CORE_BIN to run the real BTQ Core integration test");
         Path binary = Path.of(binarySetting).toAbsolutePath();
         assumeTrue(Files.isExecutable(binary), "BTQ_CORE_BIN is not executable: " + binary);
 
@@ -40,114 +48,108 @@ class BtqCoreRegtestIntegrationTest {
         int rpcPort = freePort();
         int p2pPort = freePort();
         Path log = temporaryDirectory.resolve("btqd.log");
-        Process process = new ProcessBuilder(
-                binary.toString(),
-                "-regtest",
-                "-datadir=" + dataDirectory,
-                "-server=1",
-                "-rpcbind=127.0.0.1",
-                "-rpcallowip=127.0.0.1",
-                "-rpcport=" + rpcPort,
-                "-port=" + p2pPort,
-                "-listen=0",
-                "-dnsseed=0",
-                "-discover=0",
-                "-fallbackfee=0.00001",
-                "-acceptnonstdtxn=1",
-                "-printtoconsole=1"
-        ).redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        ProcessBuilder nodeBuilder = new ProcessBuilder(binary.toString(), "-regtest", "-datadir=" + dataDirectory,
+                "-server=1", "-rpcbind=127.0.0.1", "-rpcallowip=127.0.0.1",
+                "-rpcport=" + rpcPort, "-port=" + p2pPort, "-listen=0", "-dnsseed=0",
+                "-discover=0", "-fallbackfee=0.00001", "-printtoconsole=1")
+                .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(log.toFile()));
+        Process process = nodeBuilder.start();
 
         Path cookie = dataDirectory.resolve("regtest").resolve(".cookie");
-        BtqNodeConfig qparrowConfig = new BtqNodeConfig(
-                java.net.URI.create("http://127.0.0.1:" + rpcPort + "/"),
-                "qparrow_e2e",
-                BtqNetwork.REGTEST,
-                BtqRpcCredentials.cookie(cookie),
-                Duration.ofSeconds(10));
-        BtqNodeConfig minerConfig = new BtqNodeConfig(
-                qparrowConfig.rpcUri(),
-                "miner_e2e",
-                BtqNetwork.REGTEST,
-                BtqRpcCredentials.cookie(cookie),
-                Duration.ofSeconds(10));
-
-        BtqRpcClient nodeRpc = new BtqRpcClient(qparrowConfig).node();
+        BtqNodeConfig nodeConfig = new BtqNodeConfig(java.net.URI.create("http://127.0.0.1:" + rpcPort + "/"),
+                "qparrow_custody_e2e", BtqNetwork.REGTEST, BtqRpcCredentials.cookie(cookie), Duration.ofSeconds(60));
+        BtqNodeConfig minerConfig = new BtqNodeConfig(nodeConfig.rpcUri(), "miner_e2e", BtqNetwork.REGTEST,
+                BtqRpcCredentials.cookie(cookie), Duration.ofSeconds(60));
+        BtqRpcClient nodeRpc = new BtqRpcClient(nodeConfig).node();
+        char[] password = "integration-only-password".toCharArray();
+        Path vault = temporaryDirectory.resolve("custody.qpbtq");
+        Path state = temporaryDirectory.resolve("custody.qpstate");
         try {
             waitForNode(nodeRpc, cookie, process, log);
-            BtqCoreWallet qparrow = new BtqCoreWallet(qparrowConfig);
-            BtqCoreWallet miner = new BtqCoreWallet(minerConfig);
-
-            BtqCoreWallet.NodeStatus nodeStatus = qparrow.verifyNode();
-            assertEquals(BtqNetwork.REGTEST, nodeStatus.network());
-            assertTrue(nodeStatus.subversion().toLowerCase().contains("btq"));
-            assertTrue(qparrow.ensureWallet().descriptors());
-            assertTrue(miner.ensureWallet().descriptors());
-
+            nodeRpc.call("createwallet", minerConfig.walletName(), false, false, "", false, true, true, false);
             BtqRpcClient minerRpc = new BtqRpcClient(minerConfig).wallet();
             String miningAddress = minerRpc.callString("getnewaddress", "mining", "bech32");
             nodeRpc.callArray("generatetoaddress", 101, miningAddress);
 
-            BtqCoreWallet.P2mrAddress source = qparrow.newQuantumAddress("integration-source");
-            BtqCoreWallet.P2mrAddress destination = qparrow.newQuantumAddress("integration-destination");
-            assertTrue(source.address().startsWith("qcrt1z"));
-            assertEquals(68, source.scriptPubKey().length());
-            minerRpc.callString("sendtoaddress", source.address(), new BigDecimal("1.0"));
-            nodeRpc.callArray("generatetoaddress", 1, miningAddress);
+            BtqCustodyWallet.create(vault, state, BtqNetwork.REGTEST, password, new SecureRandom());
+            String broadcastTxid;
+            try(BtqCustodyWallet wallet = BtqCustodyWallet.open(
+                    vault, state, BtqNetwork.REGTEST, password, nodeConfig)) {
+                assertEquals(BtqNetwork.REGTEST, wallet.nodeStatus().network());
+                assertTrue(wallet.nodeStatus().subversion().toLowerCase().contains("btq"));
+                assertTrue(wallet.walletStatus().descriptors());
+                assertFalse(wallet.walletStatus().privateKeysEnabled());
+                assertTrue(wallet.walletStatus().blank());
 
-            BtqCoreWallet.QuantumBalance quantumBalance = qparrow.getQuantumBalance();
-            assertEquals(new BigDecimal("1.00000000"), quantumBalance.confirmed());
-            assertEquals(1, quantumBalance.utxoCount());
+                BtqP2mrKeyPath.Address source = wallet.nextAddress(BtqCustodySpec.Chain.RECEIVE, "source");
+                BtqP2mrKeyPath.Address recipient = wallet.nextAddress(BtqCustodySpec.Chain.RECEIVE, "recipient");
+                minerRpc.callString("sendtoaddress", source.address(), new BigDecimal("0.25"));
+                nodeRpc.callArray("generatetoaddress", 1, miningAddress);
+                nodeRpc.call("syncwithvalidationinterfacequeue");
 
-            JsonArray utxos = new BtqRpcClient(qparrowConfig).wallet().callArray("listunspent", 1, 9999999, List.of(source.address()));
-            JsonObject utxo = utxos.get(0).getAsJsonObject();
-            JsonObject fundedPsbt = new BtqRpcClient(qparrowConfig).wallet().callObject(
-                    "walletcreatefundedpsbt",
-                    List.of(Map.of("txid", utxo.get("txid").getAsString(), "vout", utxo.get("vout").getAsInt())),
-                    List.of(Map.of(destination.address(), new BigDecimal("0.3"))),
-                    0,
-                    Map.of("add_inputs", false),
-                    true);
-            String opaquePsbt = fundedPsbt.get("psbt").getAsString();
-            BtqCoreWallet.ProcessedPsbt processed = qparrow.processPsbt(opaquePsbt);
-            assertTrue(processed.complete(), "BTQ Core must sign the P2MR PSBT input");
-            BtqCoreWallet.FinalizedPsbt finalized = qparrow.finalizePsbt(processed.psbt());
-            assertTrue(finalized.complete());
-            JsonArray psbtAcceptance = nodeRpc.callArray("testmempoolaccept", List.of(finalized.hex()));
-            assertTrue(psbtAcceptance.get(0).getAsJsonObject().get("allowed").getAsBoolean());
+                List<BtqCustodyWallet.Utxo> unspent = wallet.listUtxos(1);
+                assertEquals(1, unspent.size());
+                assertEquals(source.address(), unspent.get(0).address());
+                assertEquals(25_000_000L, unspent.get(0).amountSats());
+                assertEquals(BtqCustodySpec.Chain.RECEIVE, unspent.get(0).input().chain());
+                assertEquals(0, unspent.get(0).input().index());
 
-            BtqCoreWallet.SpendDraft draft = qparrow.createSpend(
-                    source.p2mrId(), destination.address(), new BigDecimal("0.4"), new BigDecimal("0.00001"));
-            BtqCoreWallet.SignedTransaction signed = qparrow.signSpend(draft);
-            assertTrue(signed.complete());
+                BtqCustodyWallet.PreparedSpend prepared = wallet.prepareSpend(unspent,
+                        List.of(new BtqCustodyWallet.Payment(recipient.address(), 10_000_000)), 1, 100_000);
+                BtqPsbtSigner.SignedPsbt signed = wallet.sign(prepared);
+                BtqWatchOnlyCore.FinalizedTransaction finalized = wallet.finalize(signed);
+                assertEquals(64, finalized.txid().length());
 
-            JsonObject decoded = nodeRpc.callObject("decoderawtransaction", signed.hex());
-            JsonArray witness = decoded.getAsJsonArray("vin").get(0).getAsJsonObject().getAsJsonArray("txinwitness");
-            String signature = witness.asList().stream()
-                    .map(JsonElement::getAsString)
-                    .filter(item -> item.length() == 2 * 2421)
-                    .findFirst()
-                    .orElseThrow(() -> new AssertionError("P2MR witness must contain a 2420-byte ML-DSA signature plus sighash byte"));
-            assertTrue(witness.asList().stream().anyMatch(item -> {
-                        String itemHex = item.getAsString();
-                        return itemHex.length() == 2 * (1312 + 4) && itemHex.startsWith("4d2005");
-                    }), "P2MR leaf must embed the 1312-byte ML-DSA public key with PUSHDATA2 and a checksig opcode");
+                JsonObject decoded = nodeRpc.callObject("decoderawtransaction", finalized.hex());
+                JsonArray witness = decoded.getAsJsonArray("vin").get(0).getAsJsonObject().getAsJsonArray("txinwitness");
+                String signature = witness.asList().stream().map(JsonElement::getAsString)
+                        .filter(item -> item.length() == 2 * BtqMldsaSignatureBytes.TX_SIGNATURE_BYTES)
+                        .findFirst().orElseThrow(() -> new AssertionError("missing ML-DSA transaction signature"));
+                assertTrue(witness.asList().stream().map(JsonElement::getAsString)
+                        .anyMatch(item -> item.length() == 2 * (1312 + 4) && item.startsWith("4d2005")),
+                        "P2MR leaf must contain the 1312-byte ML-DSA public key");
 
-            int signatureOffset = signed.hex().indexOf(signature);
-            assertTrue(signatureOffset >= 0, "Decoded ML-DSA signature must be present verbatim in transaction serialization");
-            int mutatedByteOffset = signatureOffset + 200;
-            String originalByte = signed.hex().substring(mutatedByteOffset, mutatedByteOffset + 2);
-            String tamperedHex = signed.hex().substring(0, mutatedByteOffset)
-                    + (originalByte.equals("00") ? "01" : "00")
-                    + signed.hex().substring(mutatedByteOffset + 2);
-            BtqCoreWallet.MempoolAcceptance tampered = qparrow.dryRun(new BtqCoreWallet.SignedTransaction(tamperedHex, true));
-            assertFalse(tampered.allowed(), "Mutating the ML-DSA signature must fail P2MR validation");
+                int signatureOffset = finalized.hex().indexOf(signature);
+                int mutationOffset = signatureOffset + 200;
+                String oldByte = finalized.hex().substring(mutationOffset, mutationOffset + 2);
+                String tampered = finalized.hex().substring(0, mutationOffset)
+                        + (oldByte.equals("00") ? "01" : "00") + finalized.hex().substring(mutationOffset + 2);
+                JsonArray rejection = nodeRpc.callArray("testmempoolaccept", List.of(tampered));
+                assertFalse(rejection.get(0).getAsJsonObject().get("allowed").getAsBoolean());
 
-            BtqCoreWallet.BroadcastResult broadcast = qparrow.broadcast(signed);
-            assertEquals(draft.txid(), broadcast.txid());
-            nodeRpc.callArray("generatetoaddress", 1, miningAddress);
-            JsonObject transaction = new BtqRpcClient(qparrowConfig).wallet().callObject("gettransaction", broadcast.txid(), true, true);
-            assertTrue(transaction.get("confirmations").getAsInt() > 0);
+                BtqWatchOnlyCore.BroadcastResult broadcast = wallet.broadcast(finalized);
+                assertEquals(finalized.txid(), broadcast.txid());
+                broadcastTxid = broadcast.txid();
+                nodeRpc.callArray("generatetoaddress", 1, miningAddress);
+                nodeRpc.call("syncwithvalidationinterfacequeue");
+            }
+
+            // Prove restart persistence, then simulate complete loss of Core's
+            // public watch wallet while preserving Qparrow custody files.
+            nodeRpc.call("stop");
+            assertTrue(process.waitFor(15, TimeUnit.SECONDS));
+            Path coreWatchWallet = dataDirectory.resolve("regtest").resolve("wallets")
+                    .resolve(nodeConfig.walletName());
+            assertTrue(Files.isDirectory(coreWatchWallet), "expected Core watch wallet directory");
+            deleteTree(coreWatchWallet);
+            process = nodeBuilder.start();
+            waitForNode(nodeRpc, cookie, process, log);
+
+            try(BtqCustodyWallet reopened = BtqCustodyWallet.open(
+                    vault, state, BtqNetwork.REGTEST, password, nodeConfig)) {
+                BtqCustodyWallet.RecoveryResult recovery = reopened.recoverWatchState();
+                assertEquals(3, recovery.registeredAddresses());
+                assertEquals(0, recovery.startHeight());
+                List<BtqCustodyWallet.Utxo> afterRestart = reopened.listUtxos(1);
+                assertEquals(2, afterRestart.size(), "recipient and quantum change remain locally owned");
+                BtqP2mrKeyPath.Address next = reopened.nextAddress(BtqCustodySpec.Chain.RECEIVE, "after-restart");
+                assertEquals(2, next.index());
+                JsonObject transaction = new BtqRpcClient(nodeConfig).wallet()
+                        .callObject("gettransaction", broadcastTxid, true, true);
+                assertTrue(transaction.get("confirmations").getAsInt() > 0);
+            }
         } finally {
+            Arrays.fill(password, '\0');
             if(process.isAlive()) {
                 try {
                     nodeRpc.call("stop");
@@ -166,9 +168,7 @@ class BtqCoreRegtestIntegrationTest {
         Instant deadline = Instant.now().plusSeconds(45);
         Exception lastError = null;
         while(Instant.now().isBefore(deadline)) {
-            if(!process.isAlive()) {
-                fail("BTQ Core exited during startup. Log:\n" + Files.readString(log));
-            }
+            if(!process.isAlive()) fail("BTQ Core exited during startup. Log:\n" + Files.readString(log));
             if(Files.isRegularFile(cookie)) {
                 try {
                     rpc.callObject("getblockchaininfo");
@@ -188,5 +188,18 @@ class BtqCoreRegtestIntegrationTest {
             socket.setReuseAddress(true);
             return socket.getLocalPort();
         }
+    }
+
+    private static void deleteTree(Path root) throws Exception {
+        try(var paths = Files.walk(root)) {
+            for(Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                Files.delete(path);
+            }
+        }
+    }
+
+    /** Keeps the protocol assertion named without exposing signer internals to the integration package. */
+    private static final class BtqMldsaSignatureBytes {
+        private static final int TX_SIGNATURE_BYTES = 2421;
     }
 }

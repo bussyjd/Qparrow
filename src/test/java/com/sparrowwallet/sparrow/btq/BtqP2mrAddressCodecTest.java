@@ -21,6 +21,8 @@ class BtqP2mrAddressCodecTest {
             String address = BtqP2mrAddressCodec.encode(network, root);
             assertTrue(BtqP2mrAddressCodec.isCanonicalAddress(network, address));
             assertTrue(BtqP2mrAddressCodec.isCanonicalAddress(network, address.toUpperCase()));
+            assertArrayEquals(java.util.HexFormat.of().parseHex("5220" + root),
+                    BtqP2mrAddressCodec.scriptPubKey(network, address));
         }
     }
 
