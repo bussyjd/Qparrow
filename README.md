@@ -24,13 +24,16 @@ without independent cryptographic, application-security, and release review.
   Qparrow independently parses the entire PSBT before authorization, displays
   its locally computed fee, reparses before signing, verifies every ML-DSA
   signature locally, and requires default-policy mempool acceptance.
-- Qparrow strips witness from Core's returned finalized bytes, computes their
-  transaction ID locally, and requires it to equal the signed proposal before
-  any policy check or broadcast.
+- Qparrow validates the signed PSBT and constructs the exact P2MR witness
+  locally. It computes both txid and wtxid from local bytes and requires Core's
+  policy response to match before broadcast; Core never finalizes a signature.
 - Encrypted backups contain both the vault and authenticated address counters.
   Restore validates both before installing either and never replaces different
   existing custody files.
-- Automatic heap dumps are disabled by the Qparrow build overlay.
+- The packaged Qparrow app (`qparrow-app/build.gradle`) runs with
+  `-XX:-HeapDumpOnOutOfMemoryError`; the root Sparrow build enables heap dumps
+  and also compiles the custody sources, so only the Qparrow app image carries
+  this hardening.
 
 See [the architecture](docs/QPARROW_ARCHITECTURE.md),
 [wallet reference map](docs/BTQ_WALLET_REFERENCE_MAP.md),
@@ -68,7 +71,7 @@ vault passwords are session-only and are not written to the node profile.
    After loss of Core's watch wallet, use **Rebuild Core watch** to register all
    authenticated derivations from genesis and rescan without exposing keys.
 5. Select exact inputs, enter a P2MR destination, approve the locally validated
-   amount/fee/change, then let Qparrow sign and Core finalize/broadcast.
+   amount/fee/change, then let Qparrow sign/finalize and Core policy-check/broadcast.
 
 ## License
 

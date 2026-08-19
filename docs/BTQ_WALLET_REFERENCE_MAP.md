@@ -1,9 +1,22 @@
 # BTQ wallet reference map
 
-This map is the mandatory anchor for Qparrow wallet changes. It is based on BTQ
-Core `v0.4.4-testnet` production commit `e2d19e06` and exact Bitcoin Core 26.0
-ancestor `44d8b13`. The working BTQ branch also contains test-only commit
-`5a7edd6b2`. Revalidate this map whenever the Core pin changes.
+This map is the mandatory anchor for Qparrow wallet changes. It is pinned to BTQ
+Core commit `49ade8017` (branch `feature/p2mr-error-test`) and exact
+Bitcoin Core 26.0 ancestor `44d8b13c81e5276eb610c99f227a4d090cc532f6`.
+Revalidate this map whenever that pin changes.
+
+Qparrow requires three BTQ Core commits that the pin contains:
+
+| Commit | Change | Qparrow use |
+|---|---|---|
+| `e3da3f784` | `getnewp2mraddress` gains the `internal` parameter | change registration; probed by `BtqWatchOnlyCore.verifyNode` |
+| `f36e0b28e` | `getmininginfo` reports the active `signet_challenge` | signet identity binding |
+| `eb8cea85f` | `walletcreatefundedpsbt` per-input `weight` minimum is 657 WU | funding with the 4402 WU P2MR input weight |
+
+**None of the three is in a tagged BTQ Core release as of 2026-08-19** — the
+latest tag, `v0.4.4-testnet`, contains none of them. Qparrow therefore does not
+work against any released `btqd`; it requires a node built from `49ade8017` or
+later. Re-pin this map whenever those commits reach a tag.
 
 ## Protocol facts that invalidate Bitcoin wallet assumptions
 
@@ -26,7 +39,7 @@ ancestor `44d8b13`. The working BTQ branch also contains test-only commit
 | Concern | Files |
 |---|---|
 | ML-DSA implementation and sizes | `src/crypto/dilithium_key.{h,cpp}`, `src/crypto/dilithium_pubkey.cpp`, `src/crypto/dilithium_wrapper.{h,c}`, `src/crypto/dilithium/ref/` |
-| P2MR leaf policy | `src/script/dilithium_leaf.{h,cpp}`, `src/script/solver.cpp`, `src/script/standard.cpp` |
+| P2MR leaf policy | `src/script/dilithium_leaf.{h,cpp}`, `src/script/solver.cpp`, `src/script/signingprovider.cpp`, `src/script/dilithium_signing_provider.{h,cpp}` |
 | P2MR execution and sighash | `src/script/interpreter.{h,cpp}`, `src/script/script.{h,cpp}`, `src/script/sign.{h,cpp}` |
 | Consensus/policy/activation | `src/consensus/`, `src/policy/policy.{h,cpp}`, `src/kernel/chainparams.cpp`, `src/validation.cpp` |
 | HRPs and chain identity | `src/kernel/chainparams.cpp`, `src/chainparamsbase.cpp` |
@@ -40,17 +53,83 @@ ancestor `44d8b13`. The working BTQ branch also contains test-only commit
 
 | Flow | Core RPCs | Qparrow owner |
 |---|---|---|
-| Wallet lifecycle | `listwallets`, `listwalletdir`, `loadwallet`, `createwallet`, `getwalletinfo` | `BtqWatchOnlyCore.ensureWallet` |
-| Public registration | `getnewp2mraddress`, `getdescriptorinfo`, `importdescriptors`, `getaddressinfo` | `BtqWatchOnlyCore.registerAddress` |
+| Node identity | `getnetworkinfo`, `getblockchaininfo`, `getblockhash 0`, signet `getmininginfo` | Exact BTQ subversion, chain, genesis, default signet challenge, sync/prune state |
+| Wallet lifecycle | `listwallets`, `listwalletdir`, `loadwallet`, `createwallet`, `getwalletinfo` | Vault-ID-bound `BtqWatchOnlyCore.ensureWallet` |
+| Public registration | `getnewp2mraddress(..., internal)`, `getdescriptorinfo`, `importdescriptors`, `getaddressinfo` | Exact tree plus explicit receive/change classification |
 | UTXOs | `listunspent` | `BtqWatchOnlyCore.listUtxos` validates amount/address/script; Qparrow resolves chain/index |
 | Funding | `walletcreatefundedpsbt` with explicit inputs, input weight, quantum change, `add_inputs=false` | `BtqWatchOnlyCore.createFundedPsbt` |
 | Signing | no RPC | `BtqPsbtSigner` |
-| Final policy gate | `finalizepsbt`, local raw-tx txid binding, `testmempoolaccept` | `BtqWatchOnlyCore.finalizePsbt` |
+| Local finalization | no RPC | Reparse signatures, construct exact witness, compute txid+wtxid |
+| Final policy gate | `testmempoolaccept` | Require allowed plus exact local txid and wtxid |
 | Broadcast | `sendrawtransaction` | Exact finalized txid match in `BtqWatchOnlyCore.broadcast` |
-| Watch recovery | `getnewp2mraddress`, `importdescriptors` timestamp 0, `rescanblockchain` | Authenticated counters drive public-only reconstruction |
+| Watch recovery | `getnewp2mraddress`, `importdescriptors` timestamp `now`, one `rescanblockchain(0)` | Authenticated counters drive public-only reconstruction |
 
 Core is an authenticated public-data and transaction-construction dependency,
 not the custody boundary. The local signer treats every PSBT field as hostile.
+
+### Core RPC contract Qparrow relies on
+
+These are response shapes Qparrow asserts, not merely reads. A BTQ Core change
+to any of them breaks Qparrow even though no Qparrow code changed.
+
+- `getdescriptorinfo` on `addr(<p2mr>)` reports `issolvable=false` (also
+  `isrange=false`, `hasprivatekeys=false`); Qparrow imports the checksummed
+  descriptor it returns.
+- `getaddressinfo` on a registered P2MR reports `solvable=true`,
+  `isdilithium=true`, `witness_version=2`, `ismine=true`, the exact
+  `scriptPubKey`, and `ischange` equal to the registration intent. The
+  `solvable=true` here comes from BTQ's `IsTrackedP2MRScript`; the same coin is
+  reported `solvable:false` by `listunspent`, so making Core internally
+  consistent would break every Qparrow registration.
+- `listunspent` entries carry `txid`, `vout`, `address`, `scriptPubKey`,
+  `amount` (BTQ, 8 decimals), and `confirmations`; Qparrow revalidates address,
+  script, and amount locally and drops anything else.
+- `testmempoolaccept` returns exactly one result carrying `allowed`, `txid`, and
+  `wtxid`; both ids must equal Qparrow's locally computed ones.
+- `getwalletinfo` reports `descriptors=true`, `private_keys_enabled=false`, and
+  `blank=true` — the last holds only because `importdescriptors` does not clear
+  `WALLET_FLAG_BLANK_WALLET`.
+- `getmininginfo` reports `signet_challenge` on signet (commit `f36e0b28e`).
+- `help getnewp2mraddress` names the `internal` parameter (commit `e3da3f784`);
+  `BtqWatchOnlyCore.verifyNode` probes this once and fails closed.
+
+### Explicitly out of scope in v1
+
+Qparrow v1 does not implement, and must not be assumed to implement:
+
+- **Key export/import.** No WIF, no Base58, no seed export in any form. BTQ Core
+  `importdilithiumkey` accepts `Base58Check(0xEF ‖ sk ‖ pk)`, so a one-way
+  bridge into Core exists and was verified, but Qparrow ships no export path to
+  drive it.
+- **Message signing and verification.**
+- **Fee bumping.** Every transaction signals RBF (`nSequence 0xfffffffd`,
+  requested explicitly as `replaceable: true`), but there is no bump flow;
+  Core's `bumpfee` cannot size a watch-only P2MR input and refuses
+  private-keys-disabled wallets. CPFP spending one's own change is the only
+  available acceleration.
+- **Any non-P2MR destination**, including legacy Base58 Dilithium addresses that
+  remain valid on testnet.
+- **Multisig and multi-leaf P2MR trees.** One leaf, one key, one policy.
+- **PSBT import and export.** The only PSBT Qparrow accepts is one it just
+  requested from its own configured Core.
+- **Tor and SOCKS proxying.** Plain HTTP to a loopback RPC endpoint only.
+- **Vault passphrase change.** There is no rekey; the vault password is fixed
+  for the life of the vault.
+
+## Implementation correctness status
+
+| Requirement | Current evidence | Status |
+|---|---|---|
+| ML-DSA seed/key/signature compatibility | Core source comparison, primitive vectors, real spends | implemented/proven for supported policy |
+| Single-leaf P2MR/control/address | Exact Core RPC cross-check and pinned network constants | implemented/proven |
+| Multi-input TapSighash | Shuffled-order unit test plus two-input real-Core standard-policy spend | implemented/proven |
+| Selected coin/economic authorization | Exact outpoint, local amount/script, outputs, fee, MAX_MONEY checks | implemented/proven |
+| PSBT scope | Strict v0/type allowlists; no unknown-field round-trip | implemented/proven |
+| Final witness identity | Local assembly and signature reverify; txid+wtxid Core match | implemented/proven |
+| Change semantics | Core `internal` RPC plus internal `addr()` descriptor and `ischange` check | implemented/proven against the pin; requires the unreleased Core commit `e3da3f784` |
+| State-loss behavior | State created with vault; missing/tampered state fails before RPC | implemented/proven |
+| Watch recovery | Bound namespace, unpruned-node gate, one restart/rebuild genesis rescan | implemented/proven for counter-covered derivations |
+| Stale valid backup rollback | No external freshness oracle; post-snapshot derivations are unknowable without bounded discovery | **not production-complete** |
 
 ## Qparrow-owned code surface
 

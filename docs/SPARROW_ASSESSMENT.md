@@ -26,10 +26,13 @@ QparrowLauncher → QparrowDesktop → BtqCustodyWallet
 Sparrow's central launcher, controllers, resources, and services remain
 byte-for-byte upstream. The distributable is the independent `qparrow-app`
 module, which compiles only the Qparrow launcher/UI and BTQ packages with
-JavaFX, Gson, Bouncy Castle, JCommander, and SLF4J. The root build has one small
-overlay hook solely to compile the same custody sources in Sparrow's complete
-regression suite. Protocol code is additive under
-`com.sparrowwallet.sparrow.btq`.
+JavaFX, Gson, Bouncy Castle, JCommander, and SLF4J. The fork owns four edits to
+upstream-maintained files so the same custody sources compile in Sparrow's
+complete regression suite: the `include 'qparrow-app'` line in
+`settings.gradle`, the `apply from: 'qparrow.gradle'` hook at the end of
+`build.gradle`, `requires org.bouncycastle.provider` in
+`src/main/java/module-info.java`, and the Qparrow content of `README.md`.
+Protocol code is additive under `com.sparrowwallet.sparrow.btq`.
 
 There is intentionally no backward compatibility. `BtqCoreWallet`, the former
 node-key path, and its `createp2mrspend`/`signp2mrtransaction` tests were
@@ -51,11 +54,21 @@ still receive legal review.
 ## Upstream update procedure
 
 1. Merge/rebase the desired Sparrow release without editing BTQ protocol code.
-2. Resolve the `qparrow-app` include and single root build-overlay hook if
-   upstream changed its settings or the end of `build.gradle`.
+2. Re-check every upstream-maintained file the fork edits, in full — a Sparrow
+   release that rewrites one of these hunks silently drops the fork's edit:
+   - `settings.gradle` — `include 'qparrow-app'`;
+   - `build.gradle` — `apply from: 'qparrow.gradle'` at end of file;
+   - `src/main/java/module-info.java` — `requires org.bouncycastle.provider`
+     (losing this breaks the root compile);
+   - `README.md` — the Qparrow description replacing Sparrow's.
 3. Compile and run the full inherited suite.
 4. Run all BTQ custody tests and the real exact-Core regtest gate.
 5. Compare BTQ Core consensus/policy/PSBT changes with
    `docs/BTQ_WALLET_REFERENCE_MAP.md` before accepting the update.
-6. Build `:qparrow-app:jpackageImage` and verify the minimal module graph,
-   Qparrow bundle identifier, legal inventory, and absence of heap dumps.
+6. Build `:qparrow-app:jpackageImage` and verify the minimal module graph
+   (`verifyQparrowIsolation`), the Qparrow bundle identifier, the legal
+   inventory, and that `Qparrow.cfg` still carries
+   `-XX:-HeapDumpOnOutOfMemoryError`. The packaged Qparrow app
+   (`qparrow-app/build.gradle`) runs with that flag; the root Sparrow build
+   enables heap dumps and also compiles the custody sources, so only the Qparrow
+   app image carries this hardening.
