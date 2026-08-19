@@ -1,4 +1,4 @@
 rootProject.name = 'sparrow'
+include 'qparrow-app'
 include 'drongo'
 include 'lark'
-include 'qparrow-app'

@@ -1,8 +1,8 @@
 plugins {
     id 'application'
-    id 'org.openjfx.javafxplugin' version '0.1.0'
-    id 'org.beryx.jlink' version '4.0.2'
-    id 'org.gradlex.extra-java-module-info' version '1.13.1'
+    id 'org.openjfx.javafxplugin'
+    id 'org.beryx.jlink'
+    id 'org.gradlex.extra-java-module-info'
 }
 
 group = 'com.bitcoinquantum'
@@ -46,7 +46,8 @@ dependencies {
 application {
     mainModule = 'com.bitcoinquantum.qparrow'
     mainClass = 'com.sparrowwallet.sparrow.QparrowLauncher'
-    applicationDefaultJvmArgs = ['--enable-native-access=javafx.graphics']
+    applicationDefaultJvmArgs = ['-XX:-HeapDumpOnOutOfMemoryError',
+                                 '--enable-native-access=javafx.graphics']
 }
 
 jlink {
