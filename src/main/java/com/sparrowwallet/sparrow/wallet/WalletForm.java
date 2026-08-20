@@ -156,6 +156,13 @@ public class WalletForm {
 
     public void refreshHistory(Integer blockHeight, List<Wallet> filterToWallets, Set<WalletNode> nodes) {
         Wallet previousWallet = wallet.copy();
+        //BTQ wallets poll BTQ Core directly and do not depend on the Electrum connection state
+        if(wallet.getPolicyType() == PolicyType.SINGLE_MLDSA) {
+            if(wallet.isValid()) {
+                refreshHistoryBtq(previousWallet, blockHeight);
+            }
+            return;
+        }
         if(wallet.isValid() && AppServices.isConnected()) {
             if(log.isDebugEnabled()) {
                 log.debug(nodes == null ? wallet.getFullName() + " refreshing full wallet history" : wallet.getFullName() + " requesting node wallet history for " + nodeRangesToString(nodes));
@@ -167,6 +174,21 @@ public class WalletForm {
                 refreshHistoryHD(previousWallet, blockHeight, filterToWallets, nodes);
             }
         }
+    }
+
+    private void refreshHistoryBtq(Wallet previousWallet, Integer blockHeight) {
+        com.sparrowwallet.sparrow.net.btq.BtqCoreHistory.BtqHistoryService btqHistoryService =
+                new com.sparrowwallet.sparrow.net.btq.BtqCoreHistory.BtqHistoryService(wallet);
+        btqHistoryService.setOnSucceeded(workerStateEvent -> {
+            EventManager.get().post(new WalletHistoryFinishedEvent(wallet));
+            updateWallets(blockHeight, previousWallet);
+        });
+        btqHistoryService.setOnFailed(workerStateEvent -> {
+            handleHistoryFailed(previousWallet, workerStateEvent.getSource().getException());
+        });
+
+        EventManager.get().post(new WalletHistoryStartedEvent(wallet, null));
+        btqHistoryService.start();
     }
 
     private void refreshHistoryHD(Wallet previousWallet, Integer blockHeight, List<Wallet> filterToWallets, Set<WalletNode> nodes) {
