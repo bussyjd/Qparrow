@@ -59,6 +59,16 @@ public enum BtqNetwork {
         };
     }
 
+    /** The drongo network for this BTQ network, for address encoding and derivation. */
+    public com.sparrowwallet.drongo.Network toNetwork() {
+        return switch(this) {
+            case MAINNET -> com.sparrowwallet.drongo.Network.MAINNET;
+            case TESTNET -> com.sparrowwallet.drongo.Network.TESTNET;
+            case SIGNET -> com.sparrowwallet.drongo.Network.SIGNET;
+            case REGTEST -> com.sparrowwallet.drongo.Network.REGTEST;
+        };
+    }
+
     public static BtqNetwork fromRpcChain(String chain) {
         return Arrays.stream(values())
                 .filter(network -> network.rpcChain.equals(chain))
