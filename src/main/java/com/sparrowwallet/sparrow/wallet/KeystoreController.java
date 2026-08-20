@@ -26,6 +26,7 @@ import javafx.scene.control.*;
 import javafx.scene.input.Clipboard;
 import javafx.scene.input.ClipboardContent;
 import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
 import org.controlsfx.control.SegmentedButton;
 import org.controlsfx.glyphfont.Glyph;
 import org.controlsfx.validation.ValidationResult;
@@ -38,6 +39,7 @@ import tornadofx.control.Field;
 
 import javax.smartcardio.CardException;
 import java.net.URL;
+import java.security.SecureRandom;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -53,6 +55,27 @@ public class KeystoreController extends WalletFormController implements Initiali
 
     @FXML
     private ToggleGroup keystoreSourceToggleGroup;
+
+    @FXML
+    private SegmentedButton sourceButtons;
+
+    @FXML
+    private VBox btqSetupPane;
+
+    @FXML
+    private Button btqGenerateButton;
+
+    @FXML
+    private TextField btqSeedImportField;
+
+    @FXML
+    private VBox btqSeedDisplayBox;
+
+    @FXML
+    private TextField btqSeedDisplay;
+
+    @FXML
+    private Button btqDoneButton;
 
     @FXML
     private Label type;
@@ -113,6 +136,8 @@ public class KeystoreController extends WalletFormController implements Initiali
 
     private final ValidationSupport validationSupport = new ValidationSupport();
 
+    private final ValidationSupport btqValidationSupport = new ValidationSupport();
+
     private final ChangeListener<String> labelChangeListener = (observable, oldValue, newValue) -> {
         keystore.setLabel(newValue);
         EventManager.get().post(new SettingsChangedEvent(walletForm.getWallet(), SettingsChangedEvent.Type.KEYSTORE_LABEL));
@@ -143,6 +168,20 @@ public class KeystoreController extends WalletFormController implements Initiali
                ToggleButton toggleButton = (ToggleButton)toggle;
                toggleButton.setDisable(toggleButton.getUserData() != keystoreSource);
            }
+        }
+
+        sourceButtons.managedProperty().bind(sourceButtons.visibleProperty());
+        btqSetupPane.managedProperty().bind(btqSetupPane.visibleProperty());
+        btqSeedDisplayBox.managedProperty().bind(btqSeedDisplayBox.visibleProperty());
+        btqDoneButton.managedProperty().bind(btqDoneButton.visibleProperty());
+
+        //A Bitcoin Quantum (SINGLE_MLDSA) wallet offers only the Bitcoin Quantum source; all other policy types hide it.
+        boolean btqPolicy = getWalletForm().getWallet().getPolicyType() == PolicyType.SINGLE_MLDSA;
+        for(Toggle toggle : keystoreSourceToggleGroup.getToggles()) {
+            ToggleButton toggleButton = (ToggleButton)toggle;
+            boolean btqSource = toggleButton.getUserData() == KeystoreSource.SW_BTQ_SEED;
+            toggleButton.setVisible(btqPolicy == btqSource);
+            toggleButton.setManaged(btqPolicy == btqSource);
         }
 
         exportButton.managedProperty().bind(exportButton.visibleProperty());
@@ -297,7 +336,9 @@ public class KeystoreController extends WalletFormController implements Initiali
         keystoreSourceToggleGroup.selectToggle(null);
         ToggleButton sourceButton = (ToggleButton)event.getSource();
         KeystoreSource keystoreSource = (KeystoreSource)sourceButton.getUserData();
-        if(keystoreSource != KeystoreSource.SW_WATCH) {
+        if(keystoreSource == KeystoreSource.SW_BTQ_SEED) {
+            showBtqSetup();
+        } else if(keystoreSource != KeystoreSource.SW_WATCH) {
             launchImportDialog(keystoreSource);
         } else {
             fingerprint.setText(KeyDerivation.DEFAULT_WATCH_ONLY_FINGERPRINT);
@@ -305,6 +346,96 @@ public class KeystoreController extends WalletFormController implements Initiali
                     : getWalletForm().getWallet().getScriptType().getDefaultDerivationPath());
             selectSourcePane.setVisible(false);
         }
+    }
+
+    private void showBtqSetup() {
+        btqSeedImportField.clear();
+        btqSeedDisplay.clear();
+        btqSeedDisplayBox.setVisible(false);
+        btqDoneButton.setVisible(false);
+        btqGenerateButton.setDisable(false);
+        sourceButtons.setVisible(false);
+        btqSetupPane.setVisible(true);
+    }
+
+    public void cancelBtqSetup(ActionEvent event) {
+        btqSeedImportField.clear();
+        btqSeedDisplay.clear();
+        btqSetupPane.setVisible(false);
+        sourceButtons.setVisible(true);
+    }
+
+    public void generateBtqSeed(ActionEvent event) {
+        byte[] seed = new byte[com.sparrowwallet.drongo.btq.BtqDerivation.MASTER_SECRET_BYTES];
+        try {
+            new SecureRandom().nextBytes(seed);
+            installBtqKeystore(seed);
+            //Show the seed once so the user can back it up; it is never persisted in a recoverable form elsewhere.
+            btqSeedDisplay.setText(Utils.bytesToHex(seed));
+            btqSeedDisplayBox.setVisible(true);
+            btqDoneButton.setVisible(true);
+            btqGenerateButton.setDisable(true);
+        } finally {
+            Arrays.fill(seed, (byte)0);
+        }
+    }
+
+    public void importBtqSeed(ActionEvent event) {
+        String hex = btqSeedImportField.getText() == null ? "" : btqSeedImportField.getText().trim();
+        if(hex.length() != 64 || !Utils.isHex(hex)) {
+            AppServices.showErrorDialog("Invalid seed", "The Bitcoin Quantum seed must be exactly 64 hexadecimal characters (32 bytes).");
+            return;
+        }
+
+        byte[] seed = Utils.hexToBytes(hex);
+        try {
+            installBtqKeystore(seed);
+        } finally {
+            Arrays.fill(seed, (byte)0);
+        }
+        btqSeedImportField.clear();
+        btqSetupPane.setVisible(false);
+        selectSourcePane.setVisible(false);
+    }
+
+    public void copyBtqSeed(ActionEvent event) {
+        ClipboardContent content = new ClipboardContent();
+        content.putString(btqSeedDisplay.getText());
+        Clipboard.getSystemClipboard().setContent(content);
+    }
+
+    public void finishBtqSetup(ActionEvent event) {
+        btqSeedDisplay.clear();
+        btqSetupPane.setVisible(false);
+        selectSourcePane.setVisible(false);
+    }
+
+    private void installBtqKeystore(byte[] seed) {
+        //fromBtqMasterSecret retains the array it is given, so hand it an independent copy the local seed can be wiped.
+        Keystore importedKeystore = Keystore.fromBtqMasterSecret(Arrays.copyOf(seed, seed.length), Network.get());
+
+        if(!keystore.getLabel().equals(importedKeystore.getLabel())) {
+            List<Keystore> changedKeystores = walletForm.getWallet().makeLabelsUnique(importedKeystore);
+            if(!changedKeystores.isEmpty()) {
+                EventManager.get().post(new SettingsChangedEvent(walletForm.getWallet(), SettingsChangedEvent.Type.KEYSTORE_LABEL));
+            }
+        }
+        keystore.setSource(importedKeystore.getSource());
+        keystore.setWalletModel(importedKeystore.getWalletModel());
+        keystore.setLabel(importedKeystore.getLabel());
+        keystore.setKeyDerivation(importedKeystore.getKeyDerivation());
+        keystore.setExtendedPublicKey(null);
+        keystore.setMasterPrivateExtendedKey(null);
+        keystore.setSeed(null);
+        keystore.setBip47ExtendedPrivateKey(null);
+        keystore.setSilentPaymentScanAddress(null);
+        keystore.setBtqMasterSecret(importedKeystore.getBtqMasterSecret());
+
+        updateType(keystore.isValid());
+        label.setText(keystore.getLabel());
+        //Setting the fingerprint and derivation fields fires SettingsChangedEvents that mark the wallet dirty for Apply.
+        fingerprint.setText(keystore.getKeyDerivation().getMasterFingerprint());
+        derivation.setText(keystore.getKeyDerivation().getDerivationPath());
     }
 
     public TextField getLabel() {
@@ -325,8 +456,8 @@ public class KeystoreController extends WalletFormController implements Initiali
         ));
 
         validationSupport.registerValidator(xpub, Validator.combine(
-                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, Network.get().getXpubHeader().getDisplayName() + " is required", getWalletForm().getWallet().getPolicyType() != PolicyType.SINGLE_SP && newValue.trim().isEmpty()),
-                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, Network.get().getXpubHeader().getDisplayName() + " is invalid", getWalletForm().getWallet().getPolicyType() != PolicyType.SINGLE_SP && !ExtendedKey.isValid(newValue)),
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, Network.get().getXpubHeader().getDisplayName() + " is required", getWalletForm().getWallet().getPolicyType() != PolicyType.SINGLE_SP && getWalletForm().getWallet().getPolicyType() != PolicyType.SINGLE_MLDSA && newValue.trim().isEmpty()),
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, Network.get().getXpubHeader().getDisplayName() + " is invalid", getWalletForm().getWallet().getPolicyType() != PolicyType.SINGLE_SP && getWalletForm().getWallet().getPolicyType() != PolicyType.SINGLE_MLDSA && !ExtendedKey.isValid(newValue)),
                 (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Extended key is not unique", ExtendedKey.isValid(newValue) && getWalletForm().getWallet().getPolicyType() != PolicyType.SINGLE_SP &&
                         walletForm.getWallet().getKeystores().stream().filter(k -> k != keystore && k.getExtendedPublicKey() != null).map(Keystore::getExtendedPublicKey).collect(Collectors.toList()).contains(ExtendedKey.fromDescriptor(newValue)))
         ));
@@ -349,6 +480,10 @@ public class KeystoreController extends WalletFormController implements Initiali
                 Validator.createEmptyValidator("Master fingerprint is required"),
                 (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Master fingerprint is invalid", (newValue == null || newValue.length() != 8 || !Utils.isHex(newValue)))
         ));
+
+        btqValidationSupport.setValidationDecorator(new StyleClassValidationDecoration());
+        btqValidationSupport.registerValidator(btqSeedImportField, false, (Control c, String newValue) ->
+                ValidationResult.fromErrorIf(c, "Seed must be 64 hexadecimal characters", newValue != null && !newValue.isEmpty() && (newValue.length() != 64 || !Utils.isHex(newValue))));
     }
 
     private void updateType(boolean showExport) {
@@ -390,6 +525,8 @@ public class KeystoreController extends WalletFormController implements Initiali
                 return "Airgapped Wallet (" + keystore.getWalletModel().toDisplayString() + ")";
             case SW_SEED:
                 return "Software Wallet";
+            case SW_BTQ_SEED:
+                return "Bitcoin Quantum Wallet";
             case SW_WATCH:
             default:
                 return "Watch Only Wallet";
@@ -408,6 +545,8 @@ public class KeystoreController extends WalletFormController implements Initiali
                 return new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.SD_CARD);
             case SW_SEED:
                 return new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.LAPTOP);
+            case SW_BTQ_SEED:
+                return new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.LOCK);
             case SW_WATCH:
             default:
                 return new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.EYE);
