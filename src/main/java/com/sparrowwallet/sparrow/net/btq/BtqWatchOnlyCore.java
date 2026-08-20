@@ -449,6 +449,18 @@ public final class BtqWatchOnlyCore implements AutoCloseable {
         return new BroadcastResult(broadcastTxid.toLowerCase(java.util.Locale.ROOT));
     }
 
+    /** The BTQ network of this connection. */
+    public BtqNetwork network() {
+        return config.network();
+    }
+
+    /** Whether Core already tracks this address as watch-only P2MR metadata (registration is not idempotent, so callers check first). */
+    public boolean isAddressRegistered(String address) {
+        JsonObject info = walletRpc.callObject("getaddressinfo", address);
+        return optionalBoolean(info, "ismine", false) && optionalBoolean(info, "solvable", false)
+                && optionalBoolean(info, "isdilithium", false);
+    }
+
     private void requirePrivateKeysDisabled() {
         JsonObject info = walletRpc.callObject("getwalletinfo");
         if(optionalBoolean(info, "private_keys_enabled", true)

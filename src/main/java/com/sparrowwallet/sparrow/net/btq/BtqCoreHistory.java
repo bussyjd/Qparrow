@@ -128,7 +128,27 @@ public final class BtqCoreHistory {
         return changed;
     }
 
-    /** JavaFX service wrapper: opens the configured Core connection and refreshes the wallet's history. */
+    /**
+     * Ensure every derived wallet node is registered as watch-only P2MR metadata with Core - the node
+     * cannot see funds arriving at an unregistered address. Registration is checked via getaddressinfo
+     * first (Core-side idempotence), so this is safe to run on every refresh and covers gap extension.
+     */
+    public static void ensureAddressesRegistered(Wallet wallet, BtqWatchOnlyCore core) {
+        com.sparrowwallet.drongo.Network network = core.network().toNetwork();
+        com.sparrowwallet.drongo.wallet.Keystore keystore = wallet.getKeystores().get(0);
+        for(KeyPurpose keyPurpose : KeyPurpose.DEFAULT_PURPOSES) {
+            for(WalletNode node : wallet.getNode(keyPurpose).getChildren()) {
+                byte[] mldsaPubKey = keystore.getBtqPublicKey(node);
+                com.sparrowwallet.drongo.btq.P2MR.P2MRScript localScript =
+                        com.sparrowwallet.drongo.btq.P2MR.scriptForPublicKey(network, mldsaPubKey);
+                if(!core.isAddressRegistered(localScript.address())) {
+                    core.registerAddress(localScript, keyPurpose, node.toString());
+                }
+            }
+        }
+    }
+
+    /** JavaFX service wrapper: opens the configured Core connection, registers any new addresses, and refreshes the wallet's history. */
     public static class BtqHistoryService extends Service<Boolean> {
         private final Wallet wallet;
 
@@ -144,7 +164,12 @@ public final class BtqCoreHistory {
                     BtqNodeConfig nodeConfig = BtqConnection.fromConfig(
                             com.sparrowwallet.sparrow.io.Config.get(), com.sparrowwallet.drongo.Network.get());
                     try {
-                        return updateWalletHistory(wallet, new BtqRpcClient(nodeConfig).wallet());
+                        BtqRpcClient rpcClient = new BtqRpcClient(nodeConfig);
+                        BtqWatchOnlyCore core = new BtqWatchOnlyCore(nodeConfig, rpcClient);
+                        core.verifyNode();
+                        core.ensureWallet();
+                        ensureAddressesRegistered(wallet, core);
+                        return updateWalletHistory(wallet, rpcClient.wallet());
                     } finally {
                         nodeConfig.close();
                     }
