@@ -81,6 +81,11 @@ public class Config {
     private File coreDataDir;
     private String coreAuth;
     private boolean useLegacyCoreWallet;
+    private Server btqCoreServer;
+    private CoreAuthType btqCoreAuthType;
+    private File btqCoreDataDir;
+    private String btqCoreAuth;
+    private String btqCoreWallet;
     private boolean legacyServer;
     private Server electrumServer;
     private List<Server> recentElectrumServers;
@@ -529,7 +534,7 @@ public class Config {
     }
 
     public Server getServer() {
-        return getServerType() == ServerType.BITCOIN_CORE ? getCoreServer() : (getServerType() == ServerType.PUBLIC_ELECTRUM_SERVER ? getPublicElectrumServer() : getElectrumServer());
+        return getServerType() == ServerType.BITCOIN_CORE ? getCoreServer() : (getServerType() == ServerType.BTQ_CORE ? getBtqCoreServer() : (getServerType() == ServerType.PUBLIC_ELECTRUM_SERVER ? getPublicElectrumServer() : getElectrumServer()));
     }
 
     public String getServerDisplayName() {
@@ -596,6 +601,51 @@ public class Config {
             recentCoreServers.remove(index);
             flush();
         }
+    }
+
+    public Server getBtqCoreServer() {
+        return btqCoreServer;
+    }
+
+    public void setBtqCoreServer(Server btqCoreServer) {
+        this.btqCoreServer = btqCoreServer;
+        flush();
+    }
+
+    public CoreAuthType getBtqCoreAuthType() {
+        return btqCoreAuthType;
+    }
+
+    public void setBtqCoreAuthType(CoreAuthType btqCoreAuthType) {
+        this.btqCoreAuthType = btqCoreAuthType;
+        flush();
+    }
+
+    public File getBtqCoreDataDir() {
+        return btqCoreDataDir;
+    }
+
+    public void setBtqCoreDataDir(File btqCoreDataDir) {
+        this.btqCoreDataDir = btqCoreDataDir;
+        flush();
+    }
+
+    public String getBtqCoreAuth() {
+        return btqCoreAuth;
+    }
+
+    public void setBtqCoreAuth(String btqCoreAuth) {
+        this.btqCoreAuth = btqCoreAuth;
+        flush();
+    }
+
+    public String getBtqCoreWallet() {
+        return btqCoreWallet == null || btqCoreWallet.isBlank() ? "btq-custody" : btqCoreWallet;
+    }
+
+    public void setBtqCoreWallet(String btqCoreWallet) {
+        this.btqCoreWallet = btqCoreWallet;
+        flush();
     }
 
     public void setCoreServerAlias(Server server) {
