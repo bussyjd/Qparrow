@@ -89,6 +89,10 @@ public final class BtqCoreHistory {
             WalletNode purposeNode = wallet.getNode(keyPurpose);
             for(WalletNode node : purposeNode.getChildren()) {
                 Script nodeScript = wallet.getOutputScript(node);
+                if(nodeScript == null) {
+                    //Locked wallet, uncached gap-window address: no funds can be here, skip
+                    continue;
+                }
                 TreeSet<BlockTransactionHashIndex> transactionOutputs = new TreeSet<>();
                 for(BlockTransaction blockTransaction : blockTransactions.values()) {
                     Transaction transaction = blockTransaction.getTransaction();
@@ -139,6 +143,10 @@ public final class BtqCoreHistory {
         for(KeyPurpose keyPurpose : KeyPurpose.DEFAULT_PURPOSES) {
             for(WalletNode node : wallet.getNode(keyPurpose).getChildren()) {
                 byte[] mldsaPubKey = keystore.getBtqPublicKey(node);
+                if(mldsaPubKey == null) {
+                    //Locked wallet, uncached gap-window address: nothing has ever arrived here, skip
+                    continue;
+                }
                 com.sparrowwallet.drongo.btq.P2MR.P2MRScript localScript =
                         com.sparrowwallet.drongo.btq.P2MR.scriptForPublicKey(network, mldsaPubKey);
                 if(!core.isAddressRegistered(localScript.address())) {

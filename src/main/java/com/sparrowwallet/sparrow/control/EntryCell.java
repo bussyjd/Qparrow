@@ -126,6 +126,13 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
             } else if(entry instanceof NodeEntry nodeEntry) {
                 Address address = nodeEntry.getAddress();
                 getStyleClass().add("address-cell");
+                if(address == null) {
+                    //Locked BTQ wallet, uncached gap-window node: address is available after unlock
+                    setText("Locked - unlock to reveal");
+                    setContextMenu(null);
+                    setGraphic(null);
+                    return;
+                }
                 setText(address.toString());
                 setContextMenu(new AddressContextMenu(address, nodeEntry.getOutputDescriptor(), nodeEntry, true, getTreeTableView()));
                 Tooltip tooltip = new Tooltip();
