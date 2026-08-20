@@ -127,6 +127,48 @@ public class ServerSettingsController extends SettingsDetailController {
     private TextField coreProxyPort;
 
     @FXML
+    private Form btqCoreForm;
+
+    @FXML
+    private TextField btqCoreHost;
+
+    @FXML
+    private TextField btqCorePort;
+
+    @FXML
+    private ToggleGroup btqCoreAuthToggleGroup;
+
+    @FXML
+    private Field btqCoreDataDirField;
+
+    @FXML
+    private TextField btqCoreDataDir;
+
+    @FXML
+    private Button btqCoreDataDirSelect;
+
+    @FXML
+    private Field btqCoreUserPassField;
+
+    @FXML
+    private TextField btqCoreUser;
+
+    @FXML
+    private PasswordField btqCorePass;
+
+    @FXML
+    private TextField btqCoreWallet;
+
+    @FXML
+    private UnlabeledToggleSwitch btqCoreUseProxy;
+
+    @FXML
+    private TextField btqCoreProxyHost;
+
+    @FXML
+    private TextField btqCoreProxyPort;
+
+    @FXML
     private Form electrumForm;
 
     @FXML
@@ -192,6 +234,7 @@ public class ServerSettingsController extends SettingsDetailController {
 
         publicElectrumForm.managedProperty().bind(publicElectrumForm.visibleProperty());
         coreForm.managedProperty().bind(coreForm.visibleProperty());
+        btqCoreForm.managedProperty().bind(btqCoreForm.visibleProperty());
         electrumForm.managedProperty().bind(electrumForm.visibleProperty());
         serverTypeToggleGroup.selectedToggleProperty().addListener((observable, oldValue, newValue) -> {
             if(serverTypeToggleGroup.getSelectedToggle() != null) {
@@ -199,8 +242,11 @@ public class ServerSettingsController extends SettingsDetailController {
                 ServerType serverType = (ServerType)newValue.getUserData();
                 publicElectrumForm.setVisible(serverType == ServerType.PUBLIC_ELECTRUM_SERVER);
                 coreForm.setVisible(serverType == ServerType.BITCOIN_CORE);
+                btqCoreForm.setVisible(serverType == ServerType.BTQ_CORE);
                 electrumForm.setVisible(serverType == ServerType.ELECTRUM_SERVER);
                 config.setServerType(serverType);
+                //TODO: BTQ_CORE connection testing is not yet wired into the Electrum/Cormorant machinery; disable the test button for this server type for now
+                testConnection.setDisable(serverType == ServerType.BTQ_CORE);
                 testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.QUESTION_CIRCLE, ""));
                 testResults.clear();
                 if(existingType != serverType) {
@@ -235,6 +281,8 @@ public class ServerSettingsController extends SettingsDetailController {
         proxyPort.setTextFormatter(new TextFieldValidator(TextFieldValidator.ValidationModus.MAX_INTEGERS, 5).getFormatter());
         coreProxyPort.setTextFormatter(new TextFieldValidator(TextFieldValidator.ValidationModus.MAX_INTEGERS, 5).getFormatter());
         publicProxyPort.setTextFormatter(new TextFieldValidator(TextFieldValidator.ValidationModus.MAX_INTEGERS, 5).getFormatter());
+        btqCorePort.setTextFormatter(new TextFieldValidator(TextFieldValidator.ValidationModus.MAX_INTEGERS, 5).getFormatter());
+        btqCoreProxyPort.setTextFormatter(new TextFieldValidator(TextFieldValidator.ValidationModus.MAX_INTEGERS, 5).getFormatter());
 
         coreHost.textProperty().addListener(getBitcoinCoreListener(config));
         corePort.textProperty().addListener(getBitcoinCoreListener(config));
@@ -245,6 +293,18 @@ public class ServerSettingsController extends SettingsDetailController {
         coreUseProxy.selectedProperty().bindBidirectional(useProxy.selectedProperty());
         coreProxyHost.textProperty().bindBidirectional(proxyHost.textProperty());
         coreProxyPort.textProperty().bindBidirectional(proxyPort.textProperty());
+
+        btqCoreHost.textProperty().addListener(getBtqCoreListener(config));
+        btqCorePort.textProperty().addListener(getBtqCoreListener(config));
+
+        btqCoreUser.textProperty().addListener(getBtqCoreAuthListener(config));
+        btqCorePass.textProperty().addListener(getBtqCoreAuthListener(config));
+
+        btqCoreWallet.textProperty().addListener((observable, oldValue, newValue) -> config.setBtqCoreWallet(newValue));
+
+        btqCoreUseProxy.selectedProperty().bindBidirectional(useProxy.selectedProperty());
+        btqCoreProxyHost.textProperty().bindBidirectional(proxyHost.textProperty());
+        btqCoreProxyPort.textProperty().bindBidirectional(proxyPort.textProperty());
 
         electrumHost.textProperty().addListener(getElectrumServerListener(config));
         electrumPort.textProperty().addListener(getElectrumServerListener(config));
@@ -283,6 +343,40 @@ public class ServerSettingsController extends SettingsDetailController {
             File dataDir = directorChooser.showDialog(window);
             if(dataDir != null) {
                 coreDataDir.setText(dataDir.getAbsolutePath());
+            }
+        });
+
+        btqCorePort.setPromptText("e.g. " + Network.get().getDefaultPort());
+        btqCoreDataDirField.managedProperty().bind(btqCoreDataDirField.visibleProperty());
+        btqCoreUserPassField.managedProperty().bind(btqCoreUserPassField.visibleProperty());
+        btqCoreUserPassField.visibleProperty().bind(btqCoreDataDirField.visibleProperty().not());
+        btqCoreAuthToggleGroup.selectedToggleProperty().addListener((observable, oldValue, newValue) -> {
+            if(btqCoreAuthToggleGroup.getSelectedToggle() != null) {
+                CoreAuthType btqAuthType = (CoreAuthType)newValue.getUserData();
+                btqCoreDataDirField.setVisible(btqAuthType == CoreAuthType.COOKIE);
+                config.setBtqCoreAuthType(btqAuthType);
+            } else if(oldValue != null) {
+                oldValue.setSelected(true);
+            }
+        });
+        CoreAuthType btqCoreAuthType = config.getBtqCoreAuthType() != null ? config.getBtqCoreAuthType() : CoreAuthType.COOKIE;
+        btqCoreAuthToggleGroup.selectToggle(btqCoreAuthToggleGroup.getToggles().stream().filter(toggle -> toggle.getUserData() == btqCoreAuthType).findFirst().orElse(null));
+
+        btqCoreDataDir.textProperty().addListener((observable, oldValue, newValue) -> {
+            File dataDir = getDirectory(newValue);
+            config.setBtqCoreDataDir(dataDir);
+        });
+
+        btqCoreDataDirSelect.setOnAction(event -> {
+            Stage window = new Stage();
+
+            DirectoryChooser directorChooser = new DirectoryChooser();
+            directorChooser.setTitle("Select Bitcoin Quantum Core Data Directory");
+            directorChooser.setInitialDirectory(config.getBtqCoreDataDir() != null ? config.getBtqCoreDataDir() : new File(System.getProperty("user.home")));
+
+            File dataDir = directorChooser.showDialog(window);
+            if(dataDir != null) {
+                btqCoreDataDir.setText(dataDir.getAbsolutePath());
             }
         });
 
@@ -485,6 +579,32 @@ public class ServerSettingsController extends SettingsDetailController {
             }
         }
 
+        Server btqCoreServer = config.getBtqCoreServer();
+        if(btqCoreServer != null) {
+            HostAndPort hostAndPort = btqCoreServer.getHostAndPort();
+            btqCoreHost.setText(hostAndPort.getHost());
+            if(hostAndPort.hasPort()) {
+                btqCorePort.setText(Integer.toString(hostAndPort.getPort()));
+            }
+        } else {
+            btqCoreHost.setText("127.0.0.1");
+            btqCorePort.setText(String.valueOf(Network.get().getDefaultPort()));
+        }
+
+        btqCoreDataDir.setText(config.getBtqCoreDataDir() != null ? config.getBtqCoreDataDir().getAbsolutePath() : getDefaultCoreDataDir().getAbsolutePath());
+
+        if(config.getBtqCoreAuth() != null) {
+            String[] userPass = config.getBtqCoreAuth().split(":");
+            if(userPass.length > 0) {
+                btqCoreUser.setText(userPass[0]);
+            }
+            if(userPass.length > 1) {
+                btqCorePass.setText(userPass[1]);
+            }
+        }
+
+        btqCoreWallet.setText(config.getBtqCoreWallet());
+
         Server electrumServer = config.getElectrumServer();
         if(electrumServer != null) {
             Protocol protocol = electrumServer.getProtocol();
@@ -640,6 +760,18 @@ public class ServerSettingsController extends SettingsDetailController {
         coreProxyHost.setDisable(!editable);
         coreProxyPort.setDisable(!editable);
 
+        btqCoreHost.setDisable(!editable);
+        btqCorePort.setDisable(!editable);
+        btqCoreAuthToggleGroup.getToggles().forEach(toggle -> ((ToggleButton)toggle).setDisable(!editable));
+        btqCoreDataDir.setDisable(!editable);
+        btqCoreDataDirSelect.setDisable(!editable);
+        btqCoreUser.setDisable(!editable);
+        btqCorePass.setDisable(!editable);
+        btqCoreWallet.setDisable(!editable);
+        btqCoreUseProxy.setDisable(!editable);
+        btqCoreProxyHost.setDisable(!editable);
+        btqCoreProxyPort.setDisable(!editable);
+
         electrumHost.setDisable(!editable);
         electrumPort.setDisable(!editable);
         electrumUseSsl.setDisable(!editable);
@@ -742,6 +874,26 @@ public class ServerSettingsController extends SettingsDetailController {
 
         validationSupport.registerValidator(corePass, Validator.combine(
                 (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Core pass required", coreAuthToggleGroup.getSelectedToggle().getUserData() == CoreAuthType.USERPASS && newValue.isEmpty())
+        ));
+
+        validationSupport.registerValidator(btqCoreHost, Validator.combine(
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Invalid Core host", getHost(newValue) == null)
+        ));
+
+        validationSupport.registerValidator(btqCorePort, Validator.combine(
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Invalid Core port", !newValue.isEmpty() && !isValidPort(Integer.parseInt(newValue)))
+        ));
+
+        validationSupport.registerValidator(btqCoreDataDir, Validator.combine(
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Core Data Dir required", btqCoreAuthToggleGroup.getSelectedToggle().getUserData() == CoreAuthType.COOKIE && (newValue.isEmpty() || getDirectory(newValue) == null))
+        ));
+
+        validationSupport.registerValidator(btqCoreUser, Validator.combine(
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Core user required", btqCoreAuthToggleGroup.getSelectedToggle().getUserData() == CoreAuthType.USERPASS && newValue.isEmpty())
+        ));
+
+        validationSupport.registerValidator(btqCorePass, Validator.combine(
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Core pass required", btqCoreAuthToggleGroup.getSelectedToggle().getUserData() == CoreAuthType.USERPASS && newValue.isEmpty())
         ));
 
         validationSupport.registerValidator(electrumHost, Validator.combine(
@@ -870,6 +1022,43 @@ public class ServerSettingsController extends SettingsDetailController {
     private ChangeListener<String> getBitcoinAuthListener(Config config) {
         return (observable, oldValue, newValue) -> {
             config.setCoreAuth(coreUser.getText() + ":" + corePass.getText());
+        };
+    }
+
+    @NotNull
+    private ChangeListener<String> getBtqCoreListener(Config config) {
+        return (observable, oldValue, newValue) -> {
+            Protocol protocol = Protocol.getProtocol(newValue);
+            if(protocol != null && Protocol.getProtocol(oldValue) == null) {
+                HostAndPort hostAndPort = protocol.getServerHostAndPort(newValue);
+                if(!hostAndPort.getHost().isEmpty()) {
+                    btqCoreHost.setText(hostAndPort.getHost());
+                    btqCorePort.setText(hostAndPort.hasPort() ? String.valueOf(hostAndPort.getPort()) : "");
+                }
+                return;
+            }
+
+            setBtqCoreServerInConfig(config);
+        };
+    }
+
+    private void setBtqCoreServerInConfig(Config config) {
+        String hostAsString = getHost(btqCoreHost.getText());
+        Integer portAsInteger = getPort(btqCorePort.getText());
+        if(hostAsString != null && !hostAsString.isEmpty() && portAsInteger != null && isValidPort(portAsInteger)) {
+            Protocol protocol = portAsInteger == Protocol.HTTPS.getDefaultPort() ? Protocol.HTTPS : Protocol.HTTP;
+            config.setBtqCoreServer(new Server(protocol.toUrlString(hostAsString, portAsInteger)));
+        } else if(hostAsString != null && !hostAsString.isEmpty()) {
+            config.setBtqCoreServer(new Server(Protocol.HTTP.toUrlString(hostAsString)));
+        } else {
+            config.setBtqCoreServer(null);
+        }
+    }
+
+    @NotNull
+    private ChangeListener<String> getBtqCoreAuthListener(Config config) {
+        return (observable, oldValue, newValue) -> {
+            config.setBtqCoreAuth(btqCoreUser.getText() + ":" + btqCorePass.getText());
         };
     }
 

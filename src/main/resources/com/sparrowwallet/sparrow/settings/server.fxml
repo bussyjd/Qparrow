@@ -54,6 +54,17 @@
                                 <ServerType fx:constant="BITCOIN_CORE"/>
                             </userData>
                         </ToggleButton>
+                        <ToggleButton text="BTQ Core" toggleGroup="$serverTypeToggleGroup">
+                            <graphic>
+                                <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="12" icon="TOGGLE_ON" styleClass="bitcoin-core" />
+                            </graphic>
+                            <tooltip>
+                                <Tooltip text="Bitcoin Quantum Core" />
+                            </tooltip>
+                            <userData>
+                                <ServerType fx:constant="BTQ_CORE"/>
+                            </userData>
+                        </ToggleButton>
                         <ToggleButton text="Private Electrum" toggleGroup="$serverTypeToggleGroup">
                             <graphic>
                                 <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="12" icon="TOGGLE_ON" styleClass="private-electrum" />
@@ -143,6 +154,56 @@
             <Field text="Proxy URL:">
                 <TextField fx:id="coreProxyHost" promptText="e.g. 127.0.0.1" />
                 <TextField fx:id="coreProxyPort" maxWidth="120" promptText="e.g. 9050/9150" />
+            </Field>
+        </Fieldset>
+    </Form>
+
+    <Form fx:id="btqCoreForm" GridPane.columnIndex="0" GridPane.rowIndex="1">
+        <Fieldset inputGrow="SOMETIMES" text="Bitcoin Quantum Core RPC">
+            <Field text="URL:">
+                <TextField fx:id="btqCoreHost" promptText="e.g. 127.0.0.1" />
+                <TextField fx:id="btqCorePort" promptText="e.g. 18332" maxWidth="120" />
+            </Field>
+            <Field text="Authentication:">
+                <SegmentedButton>
+                    <toggleGroup>
+                        <ToggleGroup fx:id="btqCoreAuthToggleGroup" />
+                    </toggleGroup>
+                    <buttons>
+                        <ToggleButton text="Default" toggleGroup="$btqCoreAuthToggleGroup">
+                            <userData>
+                                <CoreAuthType fx:constant="COOKIE"/>
+                            </userData>
+                        </ToggleButton>
+                        <ToggleButton text="User / Pass" toggleGroup="$btqCoreAuthToggleGroup">
+                            <userData>
+                                <CoreAuthType fx:constant="USERPASS"/>
+                            </userData>
+                        </ToggleButton>
+                    </buttons>
+                </SegmentedButton>
+            </Field>
+            <Field fx:id="btqCoreDataDirField" text="Data Folder:" styleClass="label-button">
+                <TextField fx:id="btqCoreDataDir"/>
+                <Button fx:id="btqCoreDataDirSelect" maxWidth="35" minWidth="-Infinity" prefWidth="35">
+                    <graphic>
+                        <Glyph fontFamily="FontAwesome" icon="EDIT" fontSize="13" />
+                    </graphic>
+                </Button>
+            </Field>
+            <Field fx:id="btqCoreUserPassField" text="User / Pass:" styleClass="label-button">
+                <TextField fx:id="btqCoreUser"/>
+                <PasswordField fx:id="btqCorePass"/>
+            </Field>
+            <Field text="Wallet:">
+                <TextField fx:id="btqCoreWallet" promptText="e.g. btq-custody" />
+            </Field>
+            <Field text="Use Proxy:">
+                <UnlabeledToggleSwitch fx:id="btqCoreUseProxy"/><HelpLabel helpText="Bitcoin Quantum Core RPC onion URLs, and all other non-RPC external addresses will be connected via this proxy if configured." />
+            </Field>
+            <Field text="Proxy URL:">
+                <TextField fx:id="btqCoreProxyHost" promptText="e.g. 127.0.0.1" />
+                <TextField fx:id="btqCoreProxyPort" maxWidth="120" promptText="e.g. 9050/9150" />
             </Field>
         </Fieldset>
     </Form>
