@@ -43,6 +43,20 @@ public class KeystoreMapper implements RowMapper<Keystore> {
             keystore.setMasterPrivateExtendedKey(masterPrivateExtendedKey);
         }
 
+        if(rs.getBytes("btqMasterSecret.secret") != null) {
+            BtqMasterSecret btqMasterSecret = new BtqMasterSecret(rs.getBytes("btqMasterSecret.secret"));
+            btqMasterSecret.setId(rs.getLong("btqMasterSecret.id"));
+            keystore.setBtqMasterSecret(btqMasterSecret);
+        } else if(rs.getBytes("btqMasterSecret.encryptedBytes") != null) {
+            EncryptedData encryptedData = new EncryptedData(rs.getBytes("btqMasterSecret.initialisationVector"),
+                    rs.getBytes("btqMasterSecret.encryptedBytes"), rs.getBytes("btqMasterSecret.keySalt"),
+                    EncryptionType.Deriver.values()[rs.getInt("btqMasterSecret.deriver")],
+                    EncryptionType.Crypter.values()[rs.getInt("btqMasterSecret.crypter")]);
+            BtqMasterSecret btqMasterSecret = new BtqMasterSecret(encryptedData);
+            btqMasterSecret.setId(rs.getLong("btqMasterSecret.id"));
+            keystore.setBtqMasterSecret(btqMasterSecret);
+        }
+
         if(rs.getString("seed.mnemonicString") != null) {
             List<String> mnemonicCode = Arrays.asList(rs.getString("seed.mnemonicString").split(" "));
             DeterministicSeed seed = new DeterministicSeed(mnemonicCode, rs.getBoolean("seed.needsPassphrase"), rs.getLong("seed.creationTimeSeconds"), DeterministicSeed.Type.values()[rs.getInt("seed.type")]);

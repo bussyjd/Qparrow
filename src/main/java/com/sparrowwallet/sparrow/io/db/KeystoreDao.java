@@ -12,14 +12,22 @@ import java.util.List;
 public interface KeystoreDao {
     @SqlQuery("select keystore.id, keystore.label, keystore.source, keystore.walletModel, keystore.masterFingerprint, keystore.derivationPath, keystore.extendedPublicKey, keystore.externalPaymentCode, keystore.silentPaymentScanAddress, keystore.deviceRegistration, " +
               "masterPrivateExtendedKey.id, masterPrivateExtendedKey.privateKey, masterPrivateExtendedKey.chainCode, masterPrivateExtendedKey.initialisationVector, masterPrivateExtendedKey.encryptedBytes, masterPrivateExtendedKey.keySalt, masterPrivateExtendedKey.deriver, masterPrivateExtendedKey.crypter, " +
-              "seed.id, seed.type, seed.mnemonicString, seed.initialisationVector, seed.encryptedBytes, seed.keySalt, seed.deriver, seed.crypter, seed.needsPassphrase, seed.creationTimeSeconds " +
-              "from keystore left join masterPrivateExtendedKey on keystore.masterPrivateExtendedKey = masterPrivateExtendedKey.id left join seed on keystore.seed = seed.id where keystore.wallet = ? order by keystore.index asc")
+              "seed.id, seed.type, seed.mnemonicString, seed.initialisationVector, seed.encryptedBytes, seed.keySalt, seed.deriver, seed.crypter, seed.needsPassphrase, seed.creationTimeSeconds, " +
+              "btqMasterSecret.id, btqMasterSecret.secret, btqMasterSecret.initialisationVector, btqMasterSecret.encryptedBytes, btqMasterSecret.keySalt, btqMasterSecret.deriver, btqMasterSecret.crypter " +
+              "from keystore left join masterPrivateExtendedKey on keystore.masterPrivateExtendedKey = masterPrivateExtendedKey.id left join seed on keystore.seed = seed.id left join btqMasterSecret on keystore.btqMasterSecret = btqMasterSecret.id where keystore.wallet = ? order by keystore.index asc")
     @RegisterRowMapper(KeystoreMapper.class)
     List<Keystore> getForWalletId(Long id);
 
-    @SqlUpdate("insert into keystore (label, source, walletModel, masterFingerprint, derivationPath, extendedPublicKey, externalPaymentCode, silentPaymentScanAddress, deviceRegistration, masterPrivateExtendedKey, seed, wallet, index) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    @SqlUpdate("insert into keystore (label, source, walletModel, masterFingerprint, derivationPath, extendedPublicKey, externalPaymentCode, silentPaymentScanAddress, deviceRegistration, masterPrivateExtendedKey, seed, btqMasterSecret, wallet, index) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     @GetGeneratedKeys("id")
-    long insert(String label, int source, int walletModel, String masterFingerprint, String derivationPath, String extendedPublicKey, String externalPaymentCode, byte[] silentPaymentScanAddress, byte[] deviceRegistration, Long masterPrivateExtendedKey, Long seed, long wallet, int index);
+    long insert(String label, int source, int walletModel, String masterFingerprint, String derivationPath, String extendedPublicKey, String externalPaymentCode, byte[] silentPaymentScanAddress, byte[] deviceRegistration, Long masterPrivateExtendedKey, Long seed, Long btqMasterSecret, long wallet, int index);
+
+    @SqlUpdate("insert into btqMasterSecret (secret, initialisationVector, encryptedBytes, keySalt, deriver, crypter) values (?, ?, ?, ?, ?, ?)")
+    @GetGeneratedKeys("id")
+    long insertBtqMasterSecret(byte[] secret, byte[] initialisationVector, byte[] encryptedBytes, byte[] keySalt, Integer deriver, Integer crypter);
+
+    @SqlUpdate("update btqMasterSecret set secret = ?, initialisationVector = ?, encryptedBytes = ?, keySalt = ?, deriver = ?, crypter = ? where id = ?")
+    void updateBtqMasterSecret(byte[] secret, byte[] initialisationVector, byte[] encryptedBytes, byte[] keySalt, Integer deriver, Integer crypter, long id);
 
     @SqlUpdate("insert into masterPrivateExtendedKey (privateKey, chainCode, initialisationVector, encryptedBytes, keySalt, deriver, crypter, creationTimeSeconds) values (?, ?, ?, ?, ?, ?, ?, ?)")
     @GetGeneratedKeys("id")
@@ -68,6 +76,18 @@ public interface KeystoreDao {
                 }
             }
 
+            if(keystore.hasBtqMasterSecret()) {
+                BtqMasterSecret btqMasterSecret = keystore.getBtqMasterSecret();
+                if(btqMasterSecret.isEncrypted()) {
+                    EncryptedData data = btqMasterSecret.getEncryptedData();
+                    long id = insertBtqMasterSecret(null, data.getInitialisationVector(), data.getEncryptedBytes(), data.getKeySalt(), data.getEncryptionType().getDeriver().ordinal(), data.getEncryptionType().getCrypter().ordinal());
+                    btqMasterSecret.setId(id);
+                } else {
+                    long id = insertBtqMasterSecret(btqMasterSecret.getSecret(), null, null, null, null, null);
+                    btqMasterSecret.setId(id);
+                }
+            }
+
             long id = insert(truncate(keystore.getLabel()), keystore.getSource().ordinal(), keystore.getWalletModel().ordinal(),
                     keystore.hasMasterPrivateKey() || wallet.isBip47() ? null : keystore.getKeyDerivation().getMasterFingerprint(),
                     keystore.getKeyDerivation().getDerivationPath(),
@@ -76,7 +96,8 @@ public interface KeystoreDao {
                     keystore.getSilentPaymentScanAddress() == null ? null : keystore.getSilentPaymentScanAddress().toBytes(),
                     keystore.getDeviceRegistration(),
                     keystore.getMasterPrivateExtendedKey() == null ? null : keystore.getMasterPrivateExtendedKey().getId(),
-                    keystore.getSeed() == null ? null : keystore.getSeed().getId(), wallet.getId(), i);
+                    keystore.getSeed() == null ? null : keystore.getSeed().getId(),
+                    keystore.getBtqMasterSecret() == null ? null : keystore.getBtqMasterSecret().getId(), wallet.getId(), i);
             keystore.setId(id);
         }
     }
@@ -99,6 +120,16 @@ public interface KeystoreDao {
                 updateSeed(seed.getType().ordinal(), null, data.getInitialisationVector(), data.getEncryptedBytes(), data.getKeySalt(), data.getEncryptionType().getDeriver().ordinal(), data.getEncryptionType().getCrypter().ordinal(), seed.needsPassphrase(), seed.getCreationTimeMillis(), seed.getId());
             } else {
                 updateSeed(seed.getType().ordinal(), seed.getMnemonicString(true).asString(), null, null, null, null, null, seed.needsPassphrase(), seed.getCreationTimeMillis(), seed.getId());
+            }
+        }
+
+        if(keystore.hasBtqMasterSecret()) {
+            BtqMasterSecret btqMasterSecret = keystore.getBtqMasterSecret();
+            if(btqMasterSecret.isEncrypted()) {
+                EncryptedData data = btqMasterSecret.getEncryptedData();
+                updateBtqMasterSecret(null, data.getInitialisationVector(), data.getEncryptedBytes(), data.getKeySalt(), data.getEncryptionType().getDeriver().ordinal(), data.getEncryptionType().getCrypter().ordinal(), btqMasterSecret.getId());
+            } else {
+                updateBtqMasterSecret(btqMasterSecret.getSecret(), null, null, null, null, null, btqMasterSecret.getId());
             }
         }
     }
