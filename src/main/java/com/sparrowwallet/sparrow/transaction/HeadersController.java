@@ -1245,6 +1245,34 @@ public class HeadersController extends TransactionFormController implements Init
         }
     }
 
+    private void broadcastBtqTransaction() {
+        javafx.concurrent.Service<com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore.BroadcastResult> btqBroadcastService = new javafx.concurrent.Service<>() {
+            @Override
+            protected javafx.concurrent.Task<com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore.BroadcastResult> createTask() {
+                return new javafx.concurrent.Task<>() {
+                    @Override
+                    protected com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore.BroadcastResult call() {
+                        try(com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore core = com.sparrowwallet.sparrow.net.btq.BtqConnection.openWatchOnlyCore(
+                                com.sparrowwallet.sparrow.io.Config.get(), com.sparrowwallet.drongo.Network.get())) {
+                            com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore.FinalizedTransaction finalized = core.verifyFinalized(headersForm.getTransaction());
+                            return core.broadcast(finalized);
+                        }
+                    }
+                };
+            }
+        };
+        btqBroadcastService.setOnSucceeded(workerStateEvent -> {
+            //v1: the BTQ history feed refreshes on demand; the wallet will show the transaction on its next refresh
+            log.info("Broadcast BTQ transaction " + btqBroadcastService.getValue().txid());
+        });
+        btqBroadcastService.setOnFailed(workerStateEvent -> {
+            broadcastButton.setDisable(false);
+            log.error("Error broadcasting BTQ transaction", workerStateEvent.getSource().getException());
+            AppServices.showErrorDialog("Error broadcasting transaction", workerStateEvent.getSource().getException().getMessage());
+        });
+        btqBroadcastService.start();
+    }
+
     public void broadcastTransaction(ActionEvent event) {
         broadcastButton.setDisable(true);
         if(headersForm.getPsbt() != null) {
@@ -1264,6 +1292,12 @@ public class HeadersController extends TransactionFormController implements Init
                     return;
                 }
             }
+        }
+
+        //Bitcoin Quantum transactions broadcast through BTQ Core (testmempoolaccept dry run first), not Electrum
+        if(headersForm.getSigningWallet() != null && headersForm.getSigningWallet().getPolicyType() == com.sparrowwallet.drongo.policy.PolicyType.SINGLE_MLDSA) {
+            broadcastBtqTransaction();
+            return;
         }
 
         if(headersForm.getSigningWallet() instanceof FinalizingPSBTWallet) {
