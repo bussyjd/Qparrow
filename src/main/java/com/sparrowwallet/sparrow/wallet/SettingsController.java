@@ -121,6 +121,11 @@ public class SettingsController extends WalletFormController implements Initiali
         keystoreTabs = new TabPane();
         keystoreTabsPane.getChildren().add(keystoreTabs);
 
+        //The ML-DSA policy is only offered when connected to Bitcoin Quantum Core (or already in use by this wallet)
+        if(Config.get().getServerType() == ServerType.BTQ_CORE || walletForm.getWallet().getPolicyType() == PolicyType.SINGLE_MLDSA) {
+            policyType.getItems().add(PolicyType.SINGLE_MLDSA);
+        }
+
         policyType.setButtonCell(new PolicyTypeButtonCell());
         policyType.setCellFactory(_ -> new PolicyTypeListCell());
         policyType.getSelectionModel().selectedItemProperty().addListener((observable, oldValue, policyType) -> {

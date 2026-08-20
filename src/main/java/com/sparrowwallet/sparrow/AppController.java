@@ -1127,7 +1127,10 @@ public class AppController implements Initializable {
             WalletNameDialog.NameAndBirthDate nameAndBirthDate = optNameAndBirthDate.get();
             File walletFile = Storage.getWalletFile(nameAndBirthDate.getName());
             Storage storage = new Storage(walletFile);
-            Wallet wallet = new Wallet(nameAndBirthDate.getName(), PolicyType.SINGLE_HD, ScriptType.P2WPKH, nameAndBirthDate.getBirthDate());
+            //A BTQ Core connection creates a Bitcoin Quantum custody wallet
+            Wallet wallet = Config.get().getServerType() == ServerType.BTQ_CORE
+                    ? new Wallet(nameAndBirthDate.getName(), PolicyType.SINGLE_MLDSA, ScriptType.P2MR, nameAndBirthDate.getBirthDate())
+                    : new Wallet(nameAndBirthDate.getName(), PolicyType.SINGLE_HD, ScriptType.P2WPKH, nameAndBirthDate.getBirthDate());
             addWalletTabOrWindow(storage, wallet, false);
         }
     }
