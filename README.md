@@ -1,81 +1,124 @@
-# Qparrow
+> **This is [Qparrow](README-QPARROW.md)** — a forward-only Bitcoin Quantum (BTQ) custody wallet forked from Sparrow.
+> The Qparrow app lives entirely in the additive `qparrow-app` module; the text below is upstream Sparrow's own README, kept verbatim so upstream merges stay clean. See **[README-QPARROW.md](README-QPARROW.md)**.
 
-Qparrow is a lean, forward-only Bitcoin Quantum wallet derived from
-[Sparrow Wallet](https://github.com/sparrowwallet/sparrow). Qparrow owns the
-encrypted master secret, ML-DSA-44 derivation, P2MR construction, transaction
-review, and signatures. BTQ Core is a private-key-disabled watch-only backend
-for chain data, PSBT construction, policy validation, and broadcast.
+# Sparrow Bitcoin Wallet
 
-This is unreleased development software. Do not use it with valuable funds
-without independent cryptographic, application-security, and release review.
+Sparrow is a modern desktop Bitcoin wallet application supporting most hardware wallets and built on common standards such as PSBT, with an emphasis on transparency and usability.
 
-## Security boundary
+More information (and release binaries) can be found at https://sparrowwallet.com. Release binaries are also available directly from [GitHub](https://github.com/sparrowwallet/sparrow/releases).
 
-- The only active entry point is `QparrowLauncher` → `QparrowDesktop` →
-  `btq.custody`. Inherited Sparrow wallets, Bitcoin signing, Electrum, hardware
-  signing, and terminal wallet flows are not initialized.
-- Qparrow creates a strict v1 encrypted vault using Argon2id and AES-256-GCM.
-  It accepts no Sparrow, BIP32/BIP39, xprv, Core-wallet, or prototype imports.
-- Core is verified as BTQ and as the selected network before a descriptor wallet
-  is created/loaded with `disable_private_keys=true`, `blank=true`.
-- Every receive/change index is authenticated and persisted before display.
-  Only the exact public P2MR tree and an `addr()` watch descriptor reach Core.
-- Every spend uses explicit user-selected inputs and P2MR-only payments/change.
-  Qparrow independently parses the entire PSBT before authorization, displays
-  its locally computed fee, reparses before signing, verifies every ML-DSA
-  signature locally, and requires default-policy mempool acceptance.
-- Qparrow validates the signed PSBT and constructs the exact P2MR witness
-  locally. It computes both txid and wtxid from local bytes and requires Core's
-  policy response to match before broadcast; Core never finalizes a signature.
-- Encrypted backups contain both the vault and authenticated address counters.
-  Restore validates both before installing either and never replaces different
-  existing custody files.
-- The packaged Qparrow app (`qparrow-app/build.gradle`) runs with
-  `-XX:-HeapDumpOnOutOfMemoryError`; the root Sparrow build enables heap dumps
-  and also compiles the custody sources, so only the Qparrow app image carries
-  this hardening.
+![Sparrow Wallet](https://sparrowwallet.com/assets/images/control-your-sends.png)
 
-See [the architecture](docs/QPARROW_ARCHITECTURE.md),
-[wallet reference map](docs/BTQ_WALLET_REFERENCE_MAP.md),
-[Sparrow/license assessment](docs/SPARROW_ASSESSMENT.md), and
-[verification matrix](docs/VERIFICATION.md).
+## Building
 
-## Build and test
+To clone this project, use
 
-Requirements are Java 25, the checked-out submodules, and an exact BTQ Core
-binary for the real integration gate.
+`git clone --recursive git@github.com:sparrowwallet/sparrow.git`
 
-```bash
-./gradlew test
+or for those without SSH credentials:
 
-BTQ_CORE_BIN=/absolute/path/to/btq-core/src/btqd \
-  ./gradlew :test \
-  --tests com.sparrowwallet.sparrow.btq.BtqCoreRegtestIntegrationTest
+`git clone --recursive https://github.com/sparrowwallet/sparrow.git`
 
-./qparrow --network regtest
-./gradlew :qparrow-app:jpackageImage
+In order to build, Sparrow requires Java 25 or higher to be installed. 
+The release binaries are built with [Eclipse Temurin 25.0.2+10](https://github.com/adoptium/temurin25-binaries/releases/tag/jdk-25.0.2%2B10).
+If you are using [SDKMAN](https://sdkman.io/), you can use `sdk env install` to ensure you have the correct version.
+
+Other packages may also be necessary to build depending on the platform. On Debian/Ubuntu systems:
+
+`sudo apt install -y rpm fakeroot binutils`
+
+The Sparrow binaries can be built from source using
+
+`./gradlew jpackage`
+
+Note that to build the Windows installer, you will need to install [WiX](https://github.com/wixtoolset/wix3/releases).
+
+When updating to the latest HEAD
+
+`git pull --recurse-submodules`
+
+The release binaries are reproducible from v1.5.0 onwards (pre codesigning and installer packaging). More detailed [instructions on reproducing the binaries](docs/reproducible.md) are provided.
+
+> Video documentation of your build process uploaded to [bitcoinbinary.org](https://bitcoinbinary.org/) is appreciated. Alternatively check the site if you wish to see if someone else already verified the provided binaries. 
+
+## Running
+
+If you prefer to run Sparrow directly from source, it can be launched from within the project directory with
+
+`./sparrow`
+
+Java 25 or higher must be installed. 
+
+## Configuration
+
+Sparrow has a number of command line options, for example to change its home folder or use testnet:
+
+```
+./sparrow -h
+
+Usage: sparrow [options]
+  Options:
+    --dir, -d
+      Path to Sparrow home folder
+    --help, -h
+      Show usage
+    --level, -l
+      Set log level
+      Possible Values: [ERROR, WARN, INFO, DEBUG, TRACE]      
+    --network, -n
+      Network to use
+      Possible Values: [mainnet, testnet, regtest, signet, testnet4]
 ```
 
-The UI defaults to regtest. Plain HTTP RPC is loopback-only; remote connections
-must use HTTPS. Cookie authentication is preferred. Basic-auth passwords and
-vault passwords are session-only and are not written to the node profile.
+Note that testnet currently refers to testnet3.
 
-## Custody operations
+As a fallback, the network (mainnet, testnet, testnet4, regtest or signet) can also be set using an environment variable `SPARROW_NETWORK`. For example:
 
-1. Create a network-specific vault with a password of at least 12 characters.
-2. Unlock against a locally controlled BTQ Core node.
-3. Reserve a receive address, fund it, and refresh validated P2MR UTXOs.
-4. Create an encrypted `.qpbackup` after address use and replace it after each
-   new receive/change reservation. Restoring an old counter snapshot can reuse
-   addresses, so only the newest backup is safe without a recovery rescan.
-   After loss of Core's watch wallet, use **Rebuild Core watch** to register all
-   authenticated derivations from genesis and rescan without exposing keys.
-5. Select exact inputs, enter a P2MR destination, approve the locally validated
-   amount/fee/change, then let Qparrow sign/finalize and Core policy-check/broadcast.
+`export SPARROW_NETWORK=testnet`
+
+A final fallback which can be useful when running the Sparrow binary is to create a file called ``network-testnet`` in the Sparrow home folder (see below) to configure the testnet network.
+
+Note that if you are connecting to an Electrum server when using testnet, that server will need to be running on testnet configuration as well.
+
+When not explicitly configured using the command line argument above, Sparrow stores its mainnet config file, log file and wallets in a home folder location appropriate to the operating system:
+
+| Platform | Location |
+|----------| -------- |
+| macOS    | ~/.sparrow |
+| Linux    | ~/.sparrow |
+| Windows  | %APPDATA%/Sparrow |
+
+Testnet3, testnet4, regtest and signet configurations (along with their wallets) are stored in subfolders to allow easy switching between networks.
+
+On macOS and Linux, Sparrow also supports the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/). 
+This is opt in: for each category below, if the corresponding directory already exists, Sparrow uses it, otherwise it continues to use the home folder above. Categories are resolved independently, so files can be moved across one at a time.
+
+| Category | Location | Contents                              |
+|----------| -------- |---------------------------------------|
+| Config   | `$XDG_CONFIG_HOME/sparrow` (default `~/.config/sparrow`) | `config`, `network-*` markers         |
+| Data     | `$XDG_DATA_HOME/sparrow` (default `~/.local/share/sparrow`) | `wallets`, `certs`, `lark`            |
+| State    | `$XDG_STATE_HOME/sparrow` (default `~/.local/state/sparrow`) | `sparrow.log`, `tor/work`, lock files |
+| Cache    | `$XDG_CACHE_HOME/sparrow` (default `~/.cache/sparrow`) | `tor/cache`                           |
+
+Specifying a home folder with the `-d` argument disables XDG resolution entirely, and stores all files in the given folder.
+
+## Reporting Issues
+
+Please use the [Issues](https://github.com/sparrowwallet/sparrow/issues) tab above to report an issue. If possible, look in the sparrow.log file in the configuration directory for information helpful in debugging. 
 
 ## License
 
-Qparrow is Apache License 2.0 software derived from Sparrow Wallet, Drongo, and
-Lark. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Qparrow is independent and is
-not endorsed by the Sparrow Wallet project. This is an engineering assessment,
-not legal advice; release counsel should review final branding and notices.
+Sparrow is licensed under the Apache 2 software licence.
+
+## GPG Key
+
+The Sparrow release binaries here and on [sparrowwallet.com](https://sparrowwallet.com/download/) are signed using [craigraw's GPG key](https://keybase.io/craigraw):  
+Fingerprint: D4D0D3202FC06849A257B38DE94618334C674B40  
+64-bit: E946 1833 4C67 4B40
+
+## Credit
+
+![Yourkit](https://www.yourkit.com/images/yklogo.png)
+
+Sparrow Wallet uses the [Yourkit Java Profiler](https://www.yourkit.com/java/profiler/) to profile and improve performance. 
+YourKit supports open source projects with useful tools for monitoring and profiling Java and .NET applications.
