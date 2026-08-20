@@ -231,7 +231,9 @@ public class AppServices {
 
     private void restartServices() {
         Config config = Config.get();
-        if(config.hasServer()) {
+        //BTQ Core is not an Electrum backend: BTQ wallets poll the node directly (WalletForm), so the
+        //global Electrum connection service must not attempt to connect in BTQ mode
+        if(config.hasServer() && config.getServerType() != com.sparrowwallet.sparrow.net.ServerType.BTQ_CORE) {
             restartService(connectionService);
         }
 
