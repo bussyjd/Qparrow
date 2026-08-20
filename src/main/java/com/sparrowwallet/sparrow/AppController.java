@@ -1276,7 +1276,7 @@ public class AppController implements Initializable {
 
             for(Wallet wallet : wallets) {
                 List<WalletTabData> walletTabData = getOpenWalletTabData();
-                List<ExtendedKey> xpubs = wallet.getKeystores().stream().map(Keystore::getExtendedPublicKey).collect(Collectors.toList());
+                List<ExtendedKey> xpubs = wallet.getKeystores().stream().map(Keystore::getExtendedPublicKey).filter(Objects::nonNull).collect(Collectors.toList());
                 Optional<WalletForm> optNewWalletForm = walletTabData.stream()
                         .map(WalletTabData::getWalletForm)
                         .filter(wf -> wf.getSettingsWalletForm() != null && wf.getSettingsWalletForm().getWallet().getPolicyType() == PolicyType.MULTI_HD &&
@@ -3154,6 +3154,14 @@ public class AppController implements Initializable {
             AppServices.showErrorDialog("Error importing Bitcoin Core descriptor wallet",
                     "The connected node is pruned at " + event.getPruneDateAsString() + ", but the wallet birthday for " + event.getWallet().getFullDisplayName() + " is set to " + event.getScanDateAsString() + ".");
         }
+    }
+
+    @Subscribe
+    public void cormorantImportStatus(CormorantImportStatusEvent event) {
+        String walletNames = event.getWallets().stream().map(Wallet::getFullDisplayName).collect(Collectors.joining(", "));
+        AppServices.showErrorDialog("Error importing Bitcoin Core descriptors",
+                "Bitcoin Core did not import " + (walletNames.isEmpty() ? "one or more descriptors" : "the descriptors for " + walletNames) + ":\n\n" + event.getErrorMessage() + "\n\n" +
+                        "Transactions and balances may be incomplete until the import succeeds.");
     }
 
     @Subscribe
