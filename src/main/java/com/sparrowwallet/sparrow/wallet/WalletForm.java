@@ -584,6 +584,14 @@ public class WalletForm {
     }
 
     @Subscribe
+    public void walletOpened(WalletOpenedEvent event) {
+        //BTQ wallets have no Electrum ConnectionEvent to trigger the initial load; refresh from Core on open
+        if(event.getWallet() == wallet && wallet.getPolicyType() == PolicyType.SINGLE_MLDSA) {
+            refreshHistory(AppServices.getCurrentBlockHeight());
+        }
+    }
+
+    @Subscribe
     public void walletNodeHistoryChanged(WalletNodeHistoryChangedEvent event) {
         if(wallet.isValid() && !wallet.isNested()) {
             if(transactionMempoolService != null) {
