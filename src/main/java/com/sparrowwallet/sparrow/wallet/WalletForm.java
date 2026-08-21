@@ -22,8 +22,11 @@ import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleObjectProperty;
+import javafx.concurrent.ScheduledService;
+import javafx.concurrent.Task;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
+import javafx.util.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,6 +56,9 @@ public class WalletForm {
     private final ObjectProperty<WalletTransaction> createdWalletTransactionProperty = new SimpleObjectProperty<>(null);
 
     private ElectrumServer.TransactionMempoolService transactionMempoolService;
+
+    private com.sparrowwallet.sparrow.net.btq.BtqCoreHistory.BtqHistoryService btqHistoryService;
+    private ScheduledService<Void> btqPollService;
 
     private boolean spScanInProgress;
     private boolean spSubscriptionHeld;
@@ -177,8 +183,11 @@ public class WalletForm {
     }
 
     private void refreshHistoryBtq(Wallet previousWallet, Integer blockHeight) {
-        com.sparrowwallet.sparrow.net.btq.BtqCoreHistory.BtqHistoryService btqHistoryService =
-                new com.sparrowwallet.sparrow.net.btq.BtqCoreHistory.BtqHistoryService(wallet);
+        //Single-flight: open, poll and broadcast triggers can coincide, and concurrent refreshes would mutate the same wallet
+        if(btqHistoryService != null && btqHistoryService.isRunning()) {
+            return;
+        }
+        btqHistoryService = new com.sparrowwallet.sparrow.net.btq.BtqCoreHistory.BtqHistoryService(wallet);
         btqHistoryService.setOnSucceeded(workerStateEvent -> {
             EventManager.get().post(new WalletHistoryFinishedEvent(wallet));
             updateWallets(blockHeight, previousWallet);
@@ -588,6 +597,29 @@ public class WalletForm {
         //BTQ wallets have no Electrum ConnectionEvent to trigger the initial load; refresh from Core on open
         if(event.getWallet() == wallet && wallet.getPolicyType() == PolicyType.SINGLE_MLDSA) {
             refreshHistory(AppServices.getCurrentBlockHeight());
+            startBtqPolling();
+        }
+    }
+
+    //BTQ wallets have no Electrum server notifications; poll Core periodically so new blocks and deposits
+    //appear without a manual refresh. The single-flight guard in refreshHistoryBtq absorbs overlapping polls.
+    private void startBtqPolling() {
+        if(btqPollService == null) {
+            btqPollService = new ScheduledService<>() {
+                @Override
+                protected Task<Void> createTask() {
+                    return new Task<>() {
+                        @Override
+                        protected Void call() {
+                            Platform.runLater(() -> refreshHistory(AppServices.getCurrentBlockHeight()));
+                            return null;
+                        }
+                    };
+                }
+            };
+            btqPollService.setDelay(Duration.seconds(30));
+            btqPollService.setPeriod(Duration.seconds(30));
+            btqPollService.start();
         }
     }
 
@@ -800,6 +832,10 @@ public class WalletForm {
                 EventManager.get().unregister(this);
                 for(WalletForm nestedWalletForm : nestedWalletForms) {
                     EventManager.get().unregister(nestedWalletForm);
+                }
+                if(btqPollService != null) {
+                    btqPollService.cancel();
+                    btqPollService = null;
                 }
                 if(wallet.isValid()) {
                     AppServices.clearTransactionHistoryCache(wallet);

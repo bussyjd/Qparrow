@@ -32,6 +32,8 @@ public final class BtqWatchOnlyCore implements AutoCloseable {
     /** The custody signing limits, matching the proven Qparrow signer bounds. */
     public static final int MAX_SIGNING_INPUTS = 128;
     public static final int MAX_OUTPUTS = 128;
+    /** Blocks per rescanblockchain call; bounded so each call returns well inside the RPC request timeout. */
+    private static final int RESCAN_CHUNK_BLOCKS = 5000;
     private static final long MAX_MONEY_SATS = 21_000_000L * 100_000_000L;
     private static final Pattern P2MR_ID = Pattern.compile("[0-9a-fA-F]{16}");
     private static final HexFormat HEX = HexFormat.of();
@@ -263,24 +265,33 @@ public final class BtqWatchOnlyCore implements AutoCloseable {
         return registered;
     }
 
+    /** Rescan the whole chain for watch-wallet history in bounded height ranges, so no single RPC call outlives the request timeout. */
     public RescanResult rescanFromGenesis() {
         requirePrivateKeysDisabled();
-        for(int attempt = 0; attempt < 3; attempt++) {
-            JsonObject result = walletRpc.callObject("rescanblockchain", 0);
-            int start = requiredInt(result, "start_height", "rescanblockchain");
-            if(start != 0) {
-                throw new IllegalStateException("BTQ Core returned an invalid rescan start height");
+        int tip = requiredInt(nodeRpc.callObject("getblockchaininfo"), "blocks", "getblockchaininfo");
+        int start = 0;
+        while(start <= tip) {
+            int stop = Math.min(start + RESCAN_CHUNK_BLOCKS - 1, tip);
+            JsonObject result = null;
+            for(int attempt = 0; attempt < 3; attempt++) {
+                JsonObject chunk = walletRpc.callObject("rescanblockchain", start, stop);
+                if(requiredInt(chunk, "start_height", "rescanblockchain") != start) {
+                    throw new IllegalStateException("BTQ Core returned an invalid rescan start height");
+                }
+                if(chunk.has("stop_height") && !chunk.get("stop_height").isJsonNull()) {
+                    result = chunk;
+                    break;
+                }
             }
-            if(!result.has("stop_height") || result.get("stop_height").isJsonNull()) {
-                continue;
+            if(result == null) {
+                throw new IllegalStateException("BTQ Core could not complete a stable rescan after three attempts");
             }
-            int stop = requiredInt(result, "stop_height", "rescanblockchain");
-            if(stop < start) {
+            if(requiredInt(result, "stop_height", "rescanblockchain") != stop) {
                 throw new IllegalStateException("BTQ Core returned invalid rescan heights");
             }
-            return new RescanResult(start, stop);
+            start = stop + 1;
         }
-        throw new IllegalStateException("BTQ Core could not complete a stable genesis rescan after three attempts");
+        return new RescanResult(0, tip);
     }
 
     public List<WatchedUtxo> listUtxos(int minimumConfirmations) {

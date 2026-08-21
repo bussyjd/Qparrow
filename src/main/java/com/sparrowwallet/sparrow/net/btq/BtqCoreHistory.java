@@ -16,10 +16,12 @@ import com.sparrowwallet.drongo.wallet.WalletNode;
 import javafx.concurrent.Service;
 import javafx.concurrent.Task;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -36,26 +38,38 @@ import java.util.TreeSet;
  */
 public final class BtqCoreHistory {
     private static final HexFormat HEX = HexFormat.of();
-    private static final int MAX_HISTORY_TRANSACTIONS = 1000;
+    private static final int HISTORY_PAGE_SIZE = 1000;
 
     private BtqCoreHistory() {
     }
 
     /** Fetch the full watch-wallet history from Core and write it into the wallet model. Returns true if anything changed. */
     public static boolean updateWalletHistory(Wallet wallet, BtqRpcClient walletRpc) {
-        //1. Collect the distinct transaction ids the watch wallet knows about
-        JsonArray listed = walletRpc.callArray("listtransactions", "*", MAX_HISTORY_TRANSACTIONS, 0, true);
+        //1. Collect the distinct transaction ids the watch wallet knows about, paging until exhausted
         Set<String> txids = new LinkedHashSet<>();
-        for(JsonElement element : listed) {
-            if(element.isJsonObject() && element.getAsJsonObject().has("txid")) {
-                txids.add(element.getAsJsonObject().get("txid").getAsString());
+        int skip = 0;
+        while(true) {
+            JsonArray listed = walletRpc.callArray("listtransactions", "*", HISTORY_PAGE_SIZE, skip, true);
+            for(JsonElement element : listed) {
+                if(element.isJsonObject() && element.getAsJsonObject().has("txid")) {
+                    txids.add(element.getAsJsonObject().get("txid").getAsString());
+                }
             }
+            if(listed.size() < HISTORY_PAGE_SIZE) {
+                break;
+            }
+            skip += HISTORY_PAGE_SIZE;
         }
 
         //2. Fetch each transaction verbosely and build the drongo BlockTransaction map
         Map<Sha256Hash, BlockTransaction> blockTransactions = new HashMap<>();
         for(String txid : txids) {
             JsonObject verbose = walletRpc.callObject("gettransaction", txid, true);
+            if(verbose.has("confirmations") && !verbose.get("confirmations").isJsonNull()
+                    && verbose.get("confirmations").getAsInt() < 0) {
+                //Replaced, double-spent or orphaned: Core lists these forever, but they must not contribute TXOs
+                continue;
+            }
             if(!verbose.has("hex") || verbose.get("hex").isJsonNull()) {
                 throw new IllegalStateException("gettransaction did not return hex for " + txid);
             }
@@ -136,10 +150,19 @@ public final class BtqCoreHistory {
      * Ensure every derived wallet node is registered as watch-only P2MR metadata with Core - the node
      * cannot see funds arriving at an unregistered address. Registration is checked via getaddressinfo
      * first (Core-side idempotence), so this is safe to run on every refresh and covers gap extension.
+     * <p>
+     * When no address of this wallet is registered yet (a restored wallet meeting a fresh watch
+     * wallet), each importdescriptors uses timestamp "now" to avoid one implicit rescan per address,
+     * and a single explicit historical rescan follows so deposits that confirmed before registration
+     * are found. Incremental registration of fresh gap addresses afterwards stays scan-free, since
+     * a newly derived address cannot have historical deposits.
      */
     public static void ensureAddressesRegistered(Wallet wallet, BtqWatchOnlyCore core) {
+        record Registration(com.sparrowwallet.drongo.btq.P2MR.P2MRScript script, KeyPurpose keyPurpose, String label) {}
         com.sparrowwallet.drongo.Network network = core.network().toNetwork();
         com.sparrowwallet.drongo.wallet.Keystore keystore = wallet.getKeystores().get(0);
+        boolean anyRegistered = false;
+        List<Registration> unregistered = new ArrayList<>();
         for(KeyPurpose keyPurpose : KeyPurpose.DEFAULT_PURPOSES) {
             for(WalletNode node : wallet.getNode(keyPurpose).getChildren()) {
                 byte[] mldsaPubKey = keystore.getBtqPublicKey(node);
@@ -149,10 +172,25 @@ public final class BtqCoreHistory {
                 }
                 com.sparrowwallet.drongo.btq.P2MR.P2MRScript localScript =
                         com.sparrowwallet.drongo.btq.P2MR.scriptForPublicKey(network, mldsaPubKey);
-                if(!core.isAddressRegistered(localScript.address())) {
-                    core.registerAddress(localScript, keyPurpose, node.toString());
+                if(core.isAddressRegistered(localScript.address())) {
+                    anyRegistered = true;
+                } else {
+                    unregistered.add(new Registration(localScript, keyPurpose, node.toString()));
                 }
             }
+        }
+        if(unregistered.isEmpty()) {
+            return;
+        }
+        if(anyRegistered) {
+            for(Registration registration : unregistered) {
+                core.registerAddress(registration.script(), registration.keyPurpose(), registration.label());
+            }
+        } else {
+            for(Registration registration : unregistered) {
+                core.registerHistoricalAddress(registration.script(), registration.keyPurpose(), registration.label());
+            }
+            core.rescanFromGenesis();
         }
     }
 
@@ -176,10 +214,15 @@ public final class BtqCoreHistory {
                         BtqWatchOnlyCore core = new BtqWatchOnlyCore(nodeConfig, rpcClient);
                         BtqWatchOnlyCore.NodeStatus status = core.verifyNode();
                         core.ensureWallet();
-                        ensureAddressesRegistered(wallet, core);
-                        //BTQ has no Electrum connection to supply the tip height; take it from Core so UTXO
-                        //confirmations compute correctly (a zero stored height filters every UTXO out of coin selection)
-                        wallet.setStoredBlockHeight(status.blocks());
+                        //Wait out initial block download: a partial tip height would corrupt confirmations math,
+                        //and registering now would run any first-time historical rescan against an incomplete chain.
+                        //The periodic poll retries once Core is synced.
+                        if(!status.initialBlockDownload()) {
+                            ensureAddressesRegistered(wallet, core);
+                            //BTQ has no Electrum connection to supply the tip height; take it from Core so UTXO
+                            //confirmations compute correctly (a zero stored height filters every UTXO out of coin selection)
+                            wallet.setStoredBlockHeight(status.blocks());
+                        }
                         return updateWalletHistory(wallet, rpcClient.wallet());
                     } finally {
                         nodeConfig.close();
