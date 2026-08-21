@@ -174,9 +174,12 @@ public final class BtqCoreHistory {
                     try {
                         BtqRpcClient rpcClient = new BtqRpcClient(nodeConfig);
                         BtqWatchOnlyCore core = new BtqWatchOnlyCore(nodeConfig, rpcClient);
-                        core.verifyNode();
+                        BtqWatchOnlyCore.NodeStatus status = core.verifyNode();
                         core.ensureWallet();
                         ensureAddressesRegistered(wallet, core);
+                        //BTQ has no Electrum connection to supply the tip height; take it from Core so UTXO
+                        //confirmations compute correctly (a zero stored height filters every UTXO out of coin selection)
+                        wallet.setStoredBlockHeight(status.blocks());
                         return updateWalletHistory(wallet, rpcClient.wallet());
                     } finally {
                         nodeConfig.close();
