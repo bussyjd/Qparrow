@@ -592,6 +592,13 @@ public class WalletForm {
     }
 
     @Subscribe
+    public void btqTransactionBroadcast(BtqTransactionBroadcastEvent event) {
+        if(event.getWallet() == wallet && wallet.getPolicyType() == PolicyType.SINGLE_MLDSA) {
+            refreshHistory(AppServices.getCurrentBlockHeight());
+        }
+    }
+
+    @Subscribe
     public void walletNodeHistoryChanged(WalletNodeHistoryChangedEvent event) {
         if(wallet.isValid() && !wallet.isNested()) {
             if(transactionMempoolService != null) {

@@ -235,6 +235,12 @@ public class AppServices {
         //global Electrum connection service must not attempt to connect in BTQ mode
         if(config.hasServer() && config.getServerType() != com.sparrowwallet.sparrow.net.ServerType.BTQ_CORE) {
             restartService(connectionService);
+        } else if(config.hasServer()) {
+            //nothing else flips the online state without the Electrum connection lifecycle; mark the app
+            //online so the broadcast button and the Refresh Wallet action are enabled
+            onlineProperty.removeListener(onlineServicesListener);
+            onlineProperty.setValue(true);
+            onlineProperty.addListener(onlineServicesListener);
         }
 
         if(config.isFetchRates()) {

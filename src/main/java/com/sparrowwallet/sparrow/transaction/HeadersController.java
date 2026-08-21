@@ -882,7 +882,7 @@ public class HeadersController extends TransactionFormController implements Init
     }
 
     private void initializeSignButton(Wallet signingWallet) {
-        Optional<Keystore> softwareKeystore = signingWallet.getKeystores().stream().filter(keystore -> keystore.getSource().equals(KeystoreSource.SW_SEED)).findAny();
+        Optional<Keystore> softwareKeystore = signingWallet.getKeystores().stream().filter(keystore -> keystore.getSource().equals(KeystoreSource.SW_SEED) || keystore.getSource().equals(KeystoreSource.SW_BTQ_SEED)).findAny();
         Optional<Keystore> usbKeystore = signingWallet.getKeystores().stream().filter(keystore -> keystore.getSource().equals(KeystoreSource.HW_USB) || keystore.getSource().equals(KeystoreSource.SW_WATCH)).findAny();
         Optional<Keystore> bip47Keystore = signingWallet.getKeystores().stream().filter(keystore -> keystore.getSource().equals(KeystoreSource.SW_PAYMENT_CODE)).findAny();
         Optional<Keystore> cardKeystore = signingWallet.getKeystores().stream().filter(keystore -> keystore.getWalletModel().isCard()).findAny();
@@ -1262,8 +1262,13 @@ public class HeadersController extends TransactionFormController implements Init
             }
         };
         btqBroadcastService.setOnSucceeded(workerStateEvent -> {
-            //v1: the BTQ history feed refreshes on demand; the wallet will show the transaction on its next refresh
             log.info("Broadcast BTQ transaction " + btqBroadcastService.getValue().txid());
+            broadcastProgressBar.setProgress(1.0);
+            Wallet signingWallet = headersForm.getSigningWallet();
+            if(signingWallet != null) {
+                //sendrawtransaction has accepted the transaction into the node mempool; refresh from Core so the send is reflected
+                EventManager.get().post(new BtqTransactionBroadcastEvent(signingWallet, headersForm.getTransaction().getTxId()));
+            }
         });
         btqBroadcastService.setOnFailed(workerStateEvent -> {
             broadcastButton.setDisable(false);
