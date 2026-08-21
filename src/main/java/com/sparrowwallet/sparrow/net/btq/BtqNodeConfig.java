@@ -1,4 +1,3 @@
-// Modified for Qparrow: node-backed Bitcoin Quantum wallet support.
 package com.sparrowwallet.sparrow.net.btq;
 
 import java.net.InetAddress;
@@ -29,9 +28,6 @@ public final class BtqNodeConfig implements AutoCloseable {
         }
     }
 
-    public static BtqNodeConfig localhost(BtqNetwork network, String walletName, BtqRpcCredentials credentials) {
-        return new BtqNodeConfig(URI.create("http://127.0.0.1:" + network.rpcPort() + "/"), walletName, network, credentials, Duration.ofSeconds(30));
-    }
 
     public URI rpcUri() {
         return rpcUri;
@@ -61,9 +57,6 @@ public final class BtqNodeConfig implements AutoCloseable {
         return rpcUri.resolve("/wallet/" + walletName);
     }
 
-    public BtqNodeConfig withWalletName(String boundWalletName) {
-        return new BtqNodeConfig(rpcUri, boundWalletName, network, credentials, requestTimeout);
-    }
 
     @Override
     public void close() {

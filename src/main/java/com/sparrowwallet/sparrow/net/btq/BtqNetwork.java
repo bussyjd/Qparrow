@@ -1,4 +1,3 @@
-// Modified for Qparrow: node-backed Bitcoin Quantum wallet support.
 package com.sparrowwallet.sparrow.net.btq;
 
 import java.util.Arrays;
@@ -43,10 +42,6 @@ public enum BtqNetwork {
 
     public String signetChallenge() {
         return signetChallenge;
-    }
-
-    public String p2mrPrefix() {
-        return bech32Hrp + "1z";
     }
 
     /** The BTQ network for a drongo network: the two enums are deliberately kept aligned by rpc chain name. */
