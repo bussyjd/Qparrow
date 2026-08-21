@@ -321,11 +321,12 @@ public class PaymentController extends WalletFormController implements Initializ
                     List<Address> existingAddresses = getOtherAddresses();
                     WalletNode freshNode = newValue.getFreshNode(KeyPurpose.RECEIVE);
                     Address freshAddress = freshNode.getAddress();
-                    while(existingAddresses.contains(freshAddress) || (freshNode.getLabel() != null && !freshNode.getLabel().isEmpty())) {
+                    while(freshAddress != null && (existingAddresses.contains(freshAddress) || (freshNode.getLabel() != null && !freshNode.getLabel().isEmpty()))) {
                         freshNode = newValue.getFreshNode(KeyPurpose.RECEIVE, freshNode);
                         freshAddress = freshNode.getAddress();
                     }
-                    address.setText(freshAddress.toString());
+                    //Locked BTQ wallet, uncached gap-window node: the address is only derivable after unlock
+                    address.setText(freshAddress == null ? "" : freshAddress.toString());
                 }
                 label.requestFocus();
             }

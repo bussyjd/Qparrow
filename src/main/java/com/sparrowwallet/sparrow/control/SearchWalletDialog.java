@@ -217,7 +217,7 @@ public class SearchWalletDialog extends Dialog<Entry> {
                         NodeEntry purposeEntry = walletForm.getNodeEntry(keyPurpose);
                         for(Entry entry : purposeEntry.getChildren()) {
                             if(entry instanceof NodeEntry nodeEntry) {
-                                if(nodeEntry.getAddress().toString().toLowerCase(Locale.ROOT).contains(searchText) ||
+                                if((nodeEntry.getAddress() != null && nodeEntry.getAddress().toString().toLowerCase(Locale.ROOT).contains(searchText)) ||
                                         (nodeEntry.getLabel() != null && nodeEntry.getLabel().toLowerCase(Locale.ROOT).contains(searchText)) ||
                                         (nodeEntry.getValue() != null && searchValue != null && Math.abs(nodeEntry.getValue()) == searchValue)) {
                                     matchingEntries.add(entry);
@@ -231,7 +231,7 @@ public class SearchWalletDialog extends Dialog<Entry> {
                             NodeEntry purposeEntry = nestedWalletForm.getNodeEntry(keyPurpose);
                             for(Entry entry : purposeEntry.getChildren()) {
                                 if(entry instanceof NodeEntry nodeEntry) {
-                                    if(nodeEntry.getAddress().toString().toLowerCase(Locale.ROOT).contains(searchText) ||
+                                    if((nodeEntry.getAddress() != null && nodeEntry.getAddress().toString().toLowerCase(Locale.ROOT).contains(searchText)) ||
                                             (nodeEntry.getLabel() != null && nodeEntry.getLabel().toLowerCase(Locale.ROOT).contains(searchText)) ||
                                             (nodeEntry.getValue() != null && searchValue != null && Math.abs(nodeEntry.getValue()) == searchValue)) {
                                         matchingEntries.add(entry);
@@ -341,7 +341,7 @@ public class SearchWalletDialog extends Dialog<Entry> {
                         writer.write(transactionEntry.getBlockTransaction().getHash().toString());
                     } else if(entry instanceof NodeEntry nodeEntry) {
                         writer.write("");
-                        writer.write(nodeEntry.getAddress().toString());
+                        writer.write(nodeEntry.getAddress() == null ? "" : nodeEntry.getAddress().toString());
                     } else if(entry instanceof HashIndexEntry hashIndexEntry) {
                         writer.write(hashIndexEntry.getBlockTransaction().getDate() == null ? "Unconfirmed" : EntryCell.DATE_FORMAT.format(hashIndexEntry.getBlockTransaction().getDate()));
                         writer.write(hashIndexEntry.getHashIndex().toString());
@@ -396,7 +396,8 @@ public class SearchWalletDialog extends Dialog<Entry> {
             if(entry instanceof TransactionEntry transactionEntry) {
                 copyMenu = new TransactionContextMenu(getText(), transactionEntry.getBlockTransaction());
             } else if(entry instanceof NodeEntry nodeEntry) {
-                copyMenu = new AddressContextMenu(nodeEntry.getAddress(), nodeEntry.getOutputDescriptor(), null, false, null);
+                //Locked BTQ wallet, uncached gap-window node: no address to copy until unlock
+                copyMenu = nodeEntry.getAddress() == null ? new ContextMenu() : new AddressContextMenu(nodeEntry.getAddress(), nodeEntry.getOutputDescriptor(), null, false, null);
             } else if(entry instanceof UtxoEntry utxoEntry) {
                 copyMenu = new HashIndexEntryContextMenu(null, utxoEntry);
             } else {

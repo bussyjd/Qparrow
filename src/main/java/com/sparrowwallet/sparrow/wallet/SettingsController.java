@@ -330,7 +330,8 @@ public class SettingsController extends WalletFormController implements Initiali
 
         scanDescriptorQR.setVisible(!walletForm.getWallet().isValid());
         export.setDisable(!walletForm.getWallet().isValid());
-        addAccount.setDisable(!walletForm.getWallet().isValid() || walletForm.getWallet().getScriptType() == ScriptType.P2SH);
+        //BTQ derivation has no account dimension, so a child account would derive identical addresses
+        addAccount.setDisable(!walletForm.getWallet().isValid() || walletForm.getWallet().getScriptType() == ScriptType.P2SH || walletForm.getWallet().getPolicyType() == PolicyType.SINGLE_MLDSA);
         revert.setDisable(true);
         apply.setDisable(true);
     }
@@ -414,6 +415,11 @@ public class SettingsController extends WalletFormController implements Initiali
     }
 
     public static RegistryItem getUROutputDescriptor(Wallet wallet) {
+        if(wallet.getScriptType() == ScriptType.P2MR) {
+            //No UR registry type exists for a BTQ descriptor
+            return null;
+        }
+
         List<ScriptExpression> scriptExpressions = getScriptExpressions(wallet.getScriptType());
 
         RegistryItem registryItem = null;
@@ -895,7 +901,7 @@ public class SettingsController extends WalletFormController implements Initiali
     public void walletSettingsChanged(WalletSettingsChangedEvent event) {
         if(event.getWalletId().equals(walletForm.getWalletId())) {
             export.setDisable(!event.getWallet().isValid());
-            addAccount.setDisable(!event.getWallet().isValid() || event.getWallet().getScriptType() == ScriptType.P2SH);
+            addAccount.setDisable(!event.getWallet().isValid() || event.getWallet().getScriptType() == ScriptType.P2SH || event.getWallet().getPolicyType() == PolicyType.SINGLE_MLDSA);
             scanDescriptorQR.setVisible(!event.getWallet().isValid());
         }
     }

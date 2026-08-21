@@ -15,7 +15,8 @@ public class AddressTableCell extends TableCell {
     @Override
     public String formatCell() {
         if(entry instanceof NodeEntry nodeEntry) {
-            return nodeEntry.getAddress().toString();
+            //Locked BTQ wallet, uncached gap-window node: address is available after unlock
+            return nodeEntry.getAddress() == null ? "Locked - unlock to reveal" : nodeEntry.getAddress().toString();
         } else if(entry instanceof UtxoEntry utxoEntry) {
             return utxoEntry.getNode().getAddress().toString().substring(0, 10) + "..";
         }

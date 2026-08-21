@@ -603,7 +603,13 @@ public class HeadersController extends TransactionFormController implements Init
 
     private void updateSize() {
         size.setText(headersForm.getTransaction().getSize() + " B");
-        virtualSize.setText(String.format("%.2f", headersForm.getTransaction().getVirtualSize()) + " vB");
+        virtualSize.setText(String.format("%.2f", getTransactionVirtualSize()) + " vB");
+    }
+
+    private double getTransactionVirtualSize() {
+        //Policy-aware virtual size (BTQ uses a witness scale factor of 16)
+        Wallet wallet = headersForm.getSigningWallet() != null ? headersForm.getSigningWallet() : headersForm.getWallet();
+        return wallet != null ? wallet.getVirtualSize(headersForm.getTransaction()) : headersForm.getTransaction().getVirtualSize();
     }
 
     private Long calculateFee(Map<Sha256Hash, BlockTransaction> inputTransactions) {
@@ -640,7 +646,7 @@ public class HeadersController extends TransactionFormController implements Init
 
     private void updateFee(Long feeAmt) {
         fee.setValue(feeAmt);
-        double feeRateAmt = feeAmt.doubleValue() / headersForm.getTransaction().getVirtualSize();
+        double feeRateAmt = feeAmt.doubleValue() / getTransactionVirtualSize();
         feeRate.setText(String.format("%.2f", feeRateAmt) + " sats/vB" + (headersForm.isTransactionFinalized() ? "" : " (non-final)"));
     }
 
@@ -1166,6 +1172,14 @@ public class HeadersController extends TransactionFormController implements Init
                 EventManager.get().post(new TransactionOutputsChangedEvent(headersForm.getTransaction()));
             }
             unencryptedWallet.sign(signingNodes);
+            if(headersForm.getSigningWallet().getPolicyType() == PolicyType.SINGLE_MLDSA) {
+                //Signing may have derived new BTQ public keys; merge them back so addresses remain derivable while locked
+                boolean grew = headersForm.getSigningWallet().getKeystores().get(0).mergeBtqPublicKeyCache(unencryptedWallet.getKeystores().get(0));
+                if(grew) {
+                    String walletId = headersForm.getAvailableWallets().get(headersForm.getSigningWallet()).getWalletId(headersForm.getSigningWallet());
+                    EventManager.get().post(new KeystoreEncryptionChangedEvent(headersForm.getSigningWallet(), null, walletId, List.of(headersForm.getSigningWallet().getKeystores().get(0))));
+                }
+            }
             updateSignedKeystores(headersForm.getSigningWallet());
         } catch(Exception e) {
             log.warn("Failed to Sign", e);
@@ -1288,7 +1302,7 @@ public class HeadersController extends TransactionFormController implements Init
         }
 
         if(fee.getValue() > 0) {
-            double feeRateAmt = fee.getValue() / headersForm.getTransaction().getVirtualSize();
+            double feeRateAmt = fee.getValue() / getTransactionVirtualSize();
             if(feeRateAmt > AppServices.getLongFeeRatesRange().getLast() || (AppServices.getTargetBlockFeeRates() != null && feeRateAmt > AppServices.getDefaultFeeRate() * FEE_MULTIPLE_LIMIT)) {
                 Optional<ButtonType> optType = AppServices.showWarningDialog("Very high fee rate!",
                         "This transaction pays a very high fee rate of " + String.format("%.0f", feeRateAmt) + " sats/vB.\n\nBroadcast this transaction?", ButtonType.YES, ButtonType.NO);

@@ -254,13 +254,21 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
         boolean safeToAddInputsOrOutputs = transactionEntry.getWallet().isSafeToAddInputsOrOutputs(blockTransaction);
         long changeTotal = ourOutputs.stream().mapToLong(TransactionOutput::getValue).sum() - consolidationOutputs.stream().mapToLong(TransactionOutput::getValue).sum();
         Transaction tx = blockTransaction.getTransaction();
-        double vSize = tx.getVirtualSize();
+        boolean btqWallet = transactionEntry.getWallet().getPolicyType() == PolicyType.SINGLE_MLDSA;
+        //Policy-aware virtual size (BTQ uses a witness scale factor of 16)
+        double vSize = transactionEntry.getWallet().getVirtualSize(tx);
         if(changeTotal == 0) {
             //Add change output length to vSize if change was not present on the original transaction
-            TransactionOutput changeOutput = new TransactionOutput(new Transaction(), 1L, transactionEntry.getWallet().getNode(KeyPurpose.CHANGE).getOutputScript());
+            Script changeScript = transactionEntry.getWallet().getNode(KeyPurpose.CHANGE).getOutputScript();
+            if(changeScript == null) {
+                //Locked BTQ wallet: no change script is derivable until unlock
+                AppServices.showErrorDialog("Replace By Fee Error", "Unlock the wallet to derive a change address for the replacement transaction.");
+                return;
+            }
+            TransactionOutput changeOutput = new TransactionOutput(new Transaction(), 1L, changeScript);
             vSize += changeOutput.getLength();
         }
-        double inputSize = tx.getInputs().get(0).getLength() + (tx.getInputs().get(0).hasWitness() ? (double)tx.getInputs().get(0).getWitness().getLength() / Transaction.WITNESS_SCALE_FACTOR : 0);
+        double inputSize = tx.getInputs().get(0).getLength() + (tx.getInputs().get(0).hasWitness() ? (double)tx.getInputs().get(0).getWitness().getLength() / (btqWallet ? 16 : Transaction.WITNESS_SCALE_FACTOR) : 0);
         List<TxoFilter> txoFilters = List.of(new ExcludeTxoFilter(utxos), new SpentTxoFilter(blockTransaction.getHash()), new FrozenTxoFilter(), new CoinbaseTxoFilter(transactionEntry.getWallet()));
         double feeRate = blockTransaction.getFeeRate() == null ? AppServices.getMinimumRelayFeeRate() : blockTransaction.getFeeRate();
         List<OutputGroup> outputGroups = transactionEntry.getWallet().getGroupedUtxos(txoFilters, feeRate, AppServices.getMinimumRelayFeeRate(), Config.get().isGroupByAddress())
@@ -342,10 +350,19 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
 
         if(cancelTransaction) {
             Payment existing = payments.get(0);
-            Payment payment = transactionEntry.getWallet().getPolicyType() == PolicyType.SINGLE_SP ?
-                    new SilentPayment(transactionEntry.getWallet().getSilentPaymentScanAddress().getChangeAddress().getSilentPaymentAddress(),
-                            existing.getLabel(), existing.getAmount(), true) :
-                    new Payment(transactionEntry.getWallet().getFreshNode(KeyPurpose.CHANGE).getAddress(), existing.getLabel(), existing.getAmount(), true);
+            Payment payment;
+            if(transactionEntry.getWallet().getPolicyType() == PolicyType.SINGLE_SP) {
+                payment = new SilentPayment(transactionEntry.getWallet().getSilentPaymentScanAddress().getChangeAddress().getSilentPaymentAddress(),
+                        existing.getLabel(), existing.getAmount(), true);
+            } else {
+                Address freshAddress = transactionEntry.getWallet().getFreshNode(KeyPurpose.CHANGE).getAddress();
+                if(freshAddress == null) {
+                    //Locked BTQ wallet, uncached gap-window node: the address is only derivable after unlock
+                    AppServices.showErrorDialog("Replace By Fee Error", "Unlock the wallet to derive a fresh address for the cancel transaction.");
+                    return;
+                }
+                payment = new Payment(freshAddress, existing.getLabel(), existing.getAmount(), true);
+            }
             payments.clear();
             payments.add(payment);
             opReturns.clear();
@@ -380,6 +397,11 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
 
         BlockTransactionHashIndex cpfpUtxo = ourOutputs.get(0);
         Address receiveAddress = transactionEntry.getWallet().getNode(KeyPurpose.RECEIVE).getAddress();
+        if(receiveAddress == null) {
+            //Locked BTQ wallet: no address is derivable until unlock
+            AppServices.showErrorDialog("Cannot create CPFP", "Unlock the wallet to derive an address for the child transaction.");
+            return;
+        }
         TransactionOutput txOutput = new TransactionOutput(new Transaction(), cpfpUtxo.getValue(), receiveAddress.getOutputScript());
         long dustThreshold = receiveAddress.getScriptType().getDustThreshold(txOutput, Transaction.DUST_RELAY_TX_FEE);
         double inputSize = receiveAddress.getScriptType().getInputVbytes();
@@ -406,10 +428,19 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
 
         String label = transactionEntry.getLabel() == null ? "" : transactionEntry.getLabel();
         label += (label.isEmpty() ? "" : " ") + "(CPFP)";
-        Payment payment = transactionEntry.getWallet().getPolicyType() == PolicyType.SINGLE_SP ?
-                new SilentPayment(transactionEntry.getWallet().getSilentPaymentScanAddress().getChangeAddress().getSilentPaymentAddress(),
-                        label, inputTotal, true) :
-                new Payment(transactionEntry.getWallet().getFreshNode(KeyPurpose.CHANGE).getAddress(), label, inputTotal, true);
+        Payment payment;
+        if(transactionEntry.getWallet().getPolicyType() == PolicyType.SINGLE_SP) {
+            payment = new SilentPayment(transactionEntry.getWallet().getSilentPaymentScanAddress().getChangeAddress().getSilentPaymentAddress(),
+                    label, inputTotal, true);
+        } else {
+            Address freshAddress = transactionEntry.getWallet().getFreshNode(KeyPurpose.CHANGE).getAddress();
+            if(freshAddress == null) {
+                //Locked BTQ wallet, uncached gap-window node: the address is only derivable after unlock
+                AppServices.showErrorDialog("Cannot create CPFP", "Unlock the wallet to derive a fresh address for the child transaction.");
+                return;
+            }
+            payment = new Payment(freshAddress, label, inputTotal, true);
+        }
 
         EventManager.get().post(new SendActionEvent(transactionEntry.getWallet(), utxos));
         Platform.runLater(() -> EventManager.get().post(new SpendUtxoEvent(transactionEntry.getWallet(), utxos, List.of(payment), null, blockTransaction.getFee(), true, null, true)));

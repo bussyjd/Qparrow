@@ -22,7 +22,11 @@ import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.io.Server;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.net.*;
+import com.sparrowwallet.sparrow.net.btq.BtqConnection;
+import com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore;
 import javafx.application.Platform;
+import javafx.concurrent.Service;
+import javafx.concurrent.Task;
 import javafx.beans.value.ChangeListener;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -245,8 +249,6 @@ public class ServerSettingsController extends SettingsDetailController {
                 btqCoreForm.setVisible(serverType == ServerType.BTQ_CORE);
                 electrumForm.setVisible(serverType == ServerType.ELECTRUM_SERVER);
                 config.setServerType(serverType);
-                //TODO: BTQ_CORE connection testing is not yet wired into the Electrum/Cormorant machinery; disable the test button for this server type for now
-                testConnection.setDisable(serverType == ServerType.BTQ_CORE);
                 testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.QUESTION_CIRCLE, ""));
                 testResults.clear();
                 if(existingType != serverType) {
@@ -524,7 +526,9 @@ public class ServerSettingsController extends SettingsDetailController {
             testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.ELLIPSIS_H, null));
             testResults.setText("Connecting " + (config.hasServer() ? "to " + config.getServer().getUrl() : "") + "...");
 
-            if(Config.get().requiresInternalTor() && Tor.getDefault() == null) {
+            if(Config.get().getServerType() == ServerType.BTQ_CORE) {
+                testBtqConnection();
+            } else if(Config.get().requiresInternalTor() && Tor.getDefault() == null) {
                 startTor();
             } else {
                 startElectrumConnection();
@@ -669,6 +673,41 @@ public class ServerSettingsController extends SettingsDetailController {
         });
 
         torService.start();
+    }
+
+    private void testBtqConnection() {
+        Service<BtqWatchOnlyCore.NodeStatus> btqTestService = new Service<>() {
+            @Override
+            protected Task<BtqWatchOnlyCore.NodeStatus> createTask() {
+                return new Task<>() {
+                    @Override
+                    protected BtqWatchOnlyCore.NodeStatus call() {
+                        try(BtqWatchOnlyCore core = BtqConnection.openWatchOnlyCore(Config.get(), Network.get())) {
+                            return core.verifyNode();
+                        }
+                    }
+                };
+            }
+        };
+        btqTestService.setOnSucceeded(workerStateEvent -> {
+            BtqWatchOnlyCore.NodeStatus status = btqTestService.getValue();
+            testResults.setText("Connected to " + status.subversion() + " on chain " + status.network().toString().toLowerCase(Locale.ROOT) + " at height " + status.blocks());
+            if(status.initialBlockDownload()) {
+                testResults.appendText("\nThe connection to the BTQ Core node was successful, but it is still syncing (" + status.blocks() + " of " + status.headers() + " blocks) and cannot be used yet.");
+                testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.QUESTION_CIRCLE, null));
+            } else {
+                testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.CHECK_CIRCLE, "success"));
+            }
+        });
+        btqTestService.setOnFailed(workerStateEvent -> {
+            Throwable exception = workerStateEvent.getSource().getException();
+            log.error("BTQ Core connection error", exception);
+            String reason = exception.getMessage() != null ? exception.getMessage() :
+                    (exception.getCause() != null ? exception.getCause().getMessage() : exception.toString());
+            testResults.setText("Could not connect:\n\n" + reason);
+            testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.EXCLAMATION_CIRCLE, "failure"));
+        });
+        btqTestService.start();
     }
 
     private void startElectrumConnection() {

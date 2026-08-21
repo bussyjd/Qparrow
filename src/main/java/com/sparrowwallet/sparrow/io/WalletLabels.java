@@ -92,6 +92,10 @@ public class WalletLabels implements WalletImport, WalletExport {
             }
 
             for(WalletNode addressNode : exportWallet.getWalletAddresses().values()) {
+                if(addressNode.getAddress() == null) {
+                    //Locked BTQ wallet, uncached gap-window node: the address is only derivable after unlock
+                    continue;
+                }
                 labels.add(new AddressLabel(addressNode.getAddress().toString(), addressNode.getLabel(), origin, addressNode.getDerivationPath().substring(1),
                         addressNode.getTransactionOutputs().stream().flatMap(txo -> txo.isSpent() ? Stream.of(txo, txo.getSpentBy()) : Stream.of(txo))
                                 .filter(ref -> !confirmingTxs.contains(ref.getHash())).map(BlockTransactionHash::getHeight).toList()));
@@ -256,7 +260,7 @@ public class WalletLabels implements WalletImport, WalletExport {
                     for(Entry addressEntry : addressEntries) {
                         if(addressEntry instanceof NodeEntry nodeEntry) {
                             WalletNode addressNode = nodeEntry.getNode();
-                            if(addressNode.getAddress().toString().equals(label.ref)) {
+                            if(addressNode.getAddress() != null && addressNode.getAddress().toString().equals(label.ref)) {
                                 nodeEntry.getNode().setLabel(label.label);
                                 nodeEntry.labelProperty().set(label.label);
                                 addChangedEntry(changedWalletEntries, addressEntry);

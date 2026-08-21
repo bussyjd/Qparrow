@@ -185,6 +185,7 @@ public class KeystoreController extends WalletFormController implements Initiali
         }
 
         exportButton.managedProperty().bind(exportButton.visibleProperty());
+        importButton.managedProperty().bind(importButton.visibleProperty());
         viewSeedButton.managedProperty().bind(viewSeedButton.visibleProperty());
         viewKeyButton.managedProperty().bind(viewKeyButton.visibleProperty());
         cardServiceButtons.managedProperty().bind(cardServiceButtons.visibleProperty());
@@ -497,6 +498,8 @@ public class KeystoreController extends WalletFormController implements Initiali
 
         importButton.setText(keystore.getSource() == KeystoreSource.SW_WATCH ? "Import..." : "Replace...");
         importButton.setTooltip(new Tooltip(keystore.getSource() == KeystoreSource.SW_WATCH ? "Import a keystore from an external source" : "Replace this keystore with another source"));
+        //A BTQ keystore holds the only backup of the funds, and no other source can produce ML-DSA keys
+        importButton.setVisible(keystore.getSource() != KeystoreSource.SW_BTQ_SEED);
 
         boolean editable = (keystore.getSource() == KeystoreSource.SW_WATCH);
         setEditable(fingerprint, editable);
@@ -554,6 +557,11 @@ public class KeystoreController extends WalletFormController implements Initiali
     }
 
     public void importKeystore(ActionEvent event) {
+        if(keystore.getSource() == KeystoreSource.SW_BTQ_SEED) {
+            AppServices.showErrorDialog("Cannot Replace Keystore", "Replacing the keystore is not supported for a Bitcoin Quantum wallet.");
+            return;
+        }
+
         KeystoreSource initialSource = keystore.getSource();
         if(initialSource == null || !KeystoreImportDialog.getSupportedSources().contains(initialSource)) {
             initialSource = KeystoreImportDialog.getSupportedSources().get(0);

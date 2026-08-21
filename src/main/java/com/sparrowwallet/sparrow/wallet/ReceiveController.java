@@ -170,6 +170,15 @@ public class ReceiveController extends WalletFormController implements Initializ
     }
 
     public void setNodeEntry(NodeEntry nodeEntry) {
+        if(nodeEntry.getAddress() == null) {
+            //Locked BTQ wallet, uncached gap-window node: the address is only derivable after unlock
+            address.setText("Unlock the wallet to derive this address");
+            qrCode.setImage(null);
+            scriptPubKeyArea.clear();
+            outputDescriptor.clear();
+            return;
+        }
+
         if(currentEntry != null) {
             label.textProperty().unbindBidirectional(currentEntry.labelProperty());
         }
