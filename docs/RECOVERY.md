@@ -30,18 +30,16 @@ There are **no seed words** and **no WIF**. The hex is the custody root:
    in order — and are registered with the Core watch wallet. They are
    byte-identical to the original wallet's addresses; verify the first
    receive address against your records before use.
-5. **Rescan.** Address registration imports watch descriptors with the
-   current timestamp, so history from before the recovery is not visible
-   until the node rescans. Run against the watch wallet (default name
-   `btq-custody`):
-
-   ```sh
-   btq-cli -rpcwallet=btq-custody rescanblockchain 0
-   ```
-
-   The node must be fully synced and unpruned for a genesis rescan; if you
-   know the wallet's first-use height, rescan from there instead. Reopen or
-   refresh the wallet in Sparrow once the rescan completes.
+5. **Rescan (automatic).** Address registration imports watch descriptors
+   with the wallet's birth date — or from genesis when none is set — so BTQ
+   Core back-scans for historical deposits by itself, both on first
+   registration and for addresses added later as usage extends the
+   look-ahead window. Core owns the scan: it survives timeouts and node
+   restarts, and the history appears in Sparrow once it completes. Setting
+   an accurate birth date when creating the recovery wallet keeps this
+   fast; a genesis scan on a large chain can take a while and needs an
+   unpruned node. A manual `btq-cli -rpcwallet=btq-custody
+   rescanblockchain <height>` remains available but should not be needed.
 
 ## Notes
 

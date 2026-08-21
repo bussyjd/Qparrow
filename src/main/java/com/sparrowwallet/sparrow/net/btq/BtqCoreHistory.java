@@ -65,9 +65,29 @@ public final class BtqCoreHistory {
         Map<Sha256Hash, BlockTransaction> blockTransactions = new HashMap<>();
         for(String txid : txids) {
             JsonObject verbose = walletRpc.callObject("gettransaction", txid, true);
-            if(verbose.has("confirmations") && !verbose.get("confirmations").isJsonNull()
-                    && verbose.get("confirmations").getAsInt() < 0) {
-                //Replaced, double-spent or orphaned: Core lists these forever, but they must not contribute TXOs
+            int txConfirmations = verbose.has("confirmations") && !verbose.get("confirmations").isJsonNull()
+                    ? verbose.get("confirmations").getAsInt() : 0;
+            if(txConfirmations < 0) {
+                //Replaced or double-spent: Core lists these forever, but they must not contribute TXOs
+                continue;
+            }
+            if(txConfirmations == 0 && verbose.has("generated") && !verbose.get("generated").isJsonNull()
+                    && verbose.get("generated").getAsBoolean()) {
+                //A coinbase from a reorged-out block reports zero (not negative) confirmations; it can
+                //never confirm or enter the mempool, so it must not surface as unconfirmed balance
+                continue;
+            }
+            boolean abandoned = false;
+            if(txConfirmations == 0 && verbose.has("details") && verbose.get("details").isJsonArray()) {
+                for(JsonElement detail : verbose.get("details").getAsJsonArray()) {
+                    if(detail.isJsonObject() && detail.getAsJsonObject().has("abandoned")
+                            && detail.getAsJsonObject().get("abandoned").getAsBoolean()) {
+                        abandoned = true;
+                        break;
+                    }
+                }
+            }
+            if(abandoned) {
                 continue;
             }
             if(!verbose.has("hex") || verbose.get("hex").isJsonNull()) {
@@ -151,18 +171,16 @@ public final class BtqCoreHistory {
      * cannot see funds arriving at an unregistered address. Registration is checked via getaddressinfo
      * first (Core-side idempotence), so this is safe to run on every refresh and covers gap extension.
      * <p>
-     * When no address of this wallet is registered yet (a restored wallet meeting a fresh watch
-     * wallet), each importdescriptors uses timestamp "now" to avoid one implicit rescan per address,
-     * and a single explicit historical rescan follows so deposits that confirmed before registration
-     * are found. Incremental registration of fresh gap addresses afterwards stays scan-free, since
-     * a newly derived address cannot have historical deposits.
+     * Historical scanning is delegated to Core: every batch imports its watch descriptors with the
+     * wallet's birth timestamp (or 0 when unknown), so Core back-scans for any address that could
+     * carry prior deposits - on restore AND on later gap extension - and owns completion across
+     * timeouts and restarts. A wallet created fresh in Sparrow carries a recent birth date, which
+     * makes its scans no-ops.
      */
     public static void ensureAddressesRegistered(Wallet wallet, BtqWatchOnlyCore core) {
-        record Registration(com.sparrowwallet.drongo.btq.P2MR.P2MRScript script, KeyPurpose keyPurpose, String label) {}
         com.sparrowwallet.drongo.Network network = core.network().toNetwork();
         com.sparrowwallet.drongo.wallet.Keystore keystore = wallet.getKeystores().get(0);
-        boolean anyRegistered = false;
-        List<Registration> unregistered = new ArrayList<>();
+        List<BtqWatchOnlyCore.AddressRequest> unregistered = new ArrayList<>();
         for(KeyPurpose keyPurpose : KeyPurpose.DEFAULT_PURPOSES) {
             for(WalletNode node : wallet.getNode(keyPurpose).getChildren()) {
                 byte[] mldsaPubKey = keystore.getBtqPublicKey(node);
@@ -172,26 +190,16 @@ public final class BtqCoreHistory {
                 }
                 com.sparrowwallet.drongo.btq.P2MR.P2MRScript localScript =
                         com.sparrowwallet.drongo.btq.P2MR.scriptForPublicKey(network, mldsaPubKey);
-                if(core.isAddressRegistered(localScript.address())) {
-                    anyRegistered = true;
-                } else {
-                    unregistered.add(new Registration(localScript, keyPurpose, node.toString()));
+                if(!core.isAddressRegistered(localScript.address())) {
+                    unregistered.add(new BtqWatchOnlyCore.AddressRequest(localScript, keyPurpose, node.toString()));
                 }
             }
         }
         if(unregistered.isEmpty()) {
             return;
         }
-        if(anyRegistered) {
-            for(Registration registration : unregistered) {
-                core.registerAddress(registration.script(), registration.keyPurpose(), registration.label());
-            }
-        } else {
-            for(Registration registration : unregistered) {
-                core.registerHistoricalAddress(registration.script(), registration.keyPurpose(), registration.label());
-            }
-            core.rescanFromGenesis();
-        }
+        Object timestamp = wallet.getBirthDate() != null ? Long.valueOf(wallet.getBirthDate().getTime() / 1000) : Long.valueOf(0L);
+        core.registerAddresses(unregistered, timestamp);
     }
 
     /** JavaFX service wrapper: opens the configured Core connection, registers any new addresses, and refreshes the wallet's history. */
@@ -214,15 +222,16 @@ public final class BtqCoreHistory {
                         BtqWatchOnlyCore core = new BtqWatchOnlyCore(nodeConfig, rpcClient);
                         BtqWatchOnlyCore.NodeStatus status = core.verifyNode();
                         core.ensureWallet();
-                        //Wait out initial block download: a partial tip height would corrupt confirmations math,
-                        //and registering now would run any first-time historical rescan against an incomplete chain.
-                        //The periodic poll retries once Core is synced.
-                        if(!status.initialBlockDownload()) {
-                            ensureAddressesRegistered(wallet, core);
-                            //BTQ has no Electrum connection to supply the tip height; take it from Core so UTXO
-                            //confirmations compute correctly (a zero stored height filters every UTXO out of coin selection)
-                            wallet.setStoredBlockHeight(status.blocks());
+                        //A syncing node cannot be trusted for registration or confirmations; fail visibly
+                        //rather than presenting a silently unregistered wallet. The periodic poll retries.
+                        if(status.initialBlockDownload()) {
+                            throw new IllegalStateException("BTQ Core is still syncing (height " + status.blocks() +
+                                    " of " + status.headers() + "); wallet history is unavailable until it catches up");
                         }
+                        ensureAddressesRegistered(wallet, core);
+                        //BTQ has no Electrum connection to supply the tip height; take it from Core so UTXO
+                        //confirmations compute correctly (a zero stored height filters every UTXO out of coin selection)
+                        wallet.setStoredBlockHeight(status.blocks());
                         return updateWalletHistory(wallet, rpcClient.wallet());
                     } finally {
                         nodeConfig.close();

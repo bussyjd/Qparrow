@@ -347,7 +347,8 @@ public class WalletForm {
             currentWallet.setBirthHeight(min.getAsInt());
         }
 
-        if(blockHeight != null) {
+        if(blockHeight != null && currentWallet.getPolicyType() != PolicyType.SINGLE_MLDSA) {
+            //BTQ wallets take their tip height from Core inside the history task; the app-wide height is Electrum-fed
             currentWallet.setStoredBlockHeight(blockHeight);
         }
 

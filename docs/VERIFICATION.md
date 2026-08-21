@@ -18,7 +18,7 @@ The BTQ-specific tests and what they pin:
 | P2MR construction | `btq/P2MRTest`, `address/P2MRAddressTest`, `protocol/P2MRScriptEqualityTest` | Leaf/TapLeaf-root/control-block/Bech32m vectors from an independent Python reference of the TapLeaf+Bech32m algorithm |
 | PSBT fields | `psbt/P2MRPsbtInputTest` | Byte-identical round-trip of input fields `0x19`/`0x1a`/`0x1b` through parse/serialize/combine |
 | Signing | `btq/BtqPsbtSignerTest` | Sighash checked byte-for-byte against an independent BIP341 golden vector; 1312-byte leaf script round-trip; full sign → verify → finalize |
-| Wallet model | `wallet/BtqKeystoreTest`, `BtqWalletTest`, `BtqWalletSigningTest`, `BtqWalletSendTest`, `BtqKeyCacheTest` | Keystore lifecycle (encrypt/decrypt, cache warm and merge), address/output-script derivation, UI-path `Wallet.sign` dispatch, local scale-16 transaction construction (the vsize formula reproduces the live testnet spend: 5940 WU → 372 vB) |
+| Wallet model | `wallet/BtqKeystoreTest`, `BtqWalletTest`, `BtqWalletSigningTest`, `BtqWalletSendTest`, `BtqKeyCacheTest` | Keystore lifecycle (encrypt/decrypt, cache warm and merge), address/output-script derivation, UI-path `Wallet.sign` dispatch, local scale-16 transaction construction and fee economics |
 
 The full upstream drongo and Sparrow suites must stay green alongside —
 every BTQ branch is gated on `SINGLE_MLDSA`/`SW_BTQ_SEED`/`BTQ_CORE`, and

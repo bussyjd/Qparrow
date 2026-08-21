@@ -172,6 +172,11 @@ public class ReceiveController extends WalletFormController implements Initializ
     public void setNodeEntry(NodeEntry nodeEntry) {
         if(nodeEntry.getAddress() == null) {
             //Locked BTQ wallet, uncached gap-window node: the address is only derivable after unlock
+            if(currentEntry != null) {
+                label.textProperty().unbindBidirectional(currentEntry.labelProperty());
+                currentEntry = null;
+            }
+            label.setText("");
             address.setText("Unlock the wallet to derive this address");
             qrCode.setImage(null);
             scriptPubKeyArea.clear();

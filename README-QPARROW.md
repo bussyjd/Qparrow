@@ -130,10 +130,10 @@ integration plan document:
   show addresses already in its derived-pubkey cache. The cache covers the
   look-ahead window, grows on every unlock (including signing), and
   persists — but a wallet that is never unlocked cannot extend it.
-- Restoring from a master secret triggers one automatic chunked rescan of
-  the Core watch wallet on first registration; on very large chains this
-  first open takes correspondingly longer (see
-  [docs/RECOVERY.md](docs/RECOVERY.md)).
+- Restoring from a master secret makes BTQ Core back-scan automatically
+  (watch descriptors import from the wallet's birth date, or genesis when
+  unset); on very large chains the first refresh takes correspondingly
+  longer (see [docs/RECOVERY.md](docs/RECOVERY.md)).
 - Single key, single leaf, P2MR-only. No watch-only wallets (BTQ has no
   public derivation), no key export, no message signing, no hardware
   signing.

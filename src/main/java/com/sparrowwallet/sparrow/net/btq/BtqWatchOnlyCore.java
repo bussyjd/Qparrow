@@ -9,6 +9,8 @@ import com.sparrowwallet.drongo.address.InvalidAddressException;
 import com.sparrowwallet.drongo.address.P2MRAddress;
 import com.sparrowwallet.drongo.btq.P2MR;
 import com.sparrowwallet.drongo.protocol.Transaction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.HexFormat;
 import java.util.ArrayList;
@@ -27,13 +29,13 @@ import java.util.regex.Pattern;
  * P2MR construction and ML-DSA signing stay on the wallet side (drongo {@code btq} package).
  */
 public final class BtqWatchOnlyCore implements AutoCloseable {
+    private static final Logger log = LoggerFactory.getLogger(BtqWatchOnlyCore.class);
     /** 41-byte base input at 16x plus the maximum single-key P2MR witness. */
     public static final int SINGLE_KEY_P2MR_INPUT_WEIGHT = 4402;
     /** The custody signing limits, matching the proven Qparrow signer bounds. */
     public static final int MAX_SIGNING_INPUTS = 128;
     public static final int MAX_OUTPUTS = 128;
     /** Blocks per rescanblockchain call; bounded so each call returns well inside the RPC request timeout. */
-    private static final int RESCAN_CHUNK_BLOCKS = 5000;
     private static final long MAX_MONEY_SATS = 21_000_000L * 100_000_000L;
     private static final Pattern P2MR_ID = Pattern.compile("[0-9a-fA-F]{16}");
     private static final HexFormat HEX = HexFormat.of();
@@ -165,134 +167,152 @@ public final class BtqWatchOnlyCore implements AutoCloseable {
         return status;
     }
 
-    /** Register exactly one wallet-derived P2MR leaf as Core watch-only metadata. */
-    public RegisteredAddress registerAddress(P2MR.P2MRScript localScript, KeyPurpose keyPurpose, String label) {
-        return registerAddress(localScript, keyPurpose, label, "now");
+    /** A wallet-derived P2MR leaf to register as Core watch-only metadata. */
+    public record AddressRequest(P2MR.P2MRScript script, KeyPurpose keyPurpose, String label) {}
+
+    /** Register exactly one wallet-derived P2MR leaf, importing its watch descriptor from the given timestamp. */
+    public RegisteredAddress registerAddress(P2MR.P2MRScript localScript, KeyPurpose keyPurpose, String label, Object timestamp) {
+        return registerAddresses(List.of(new AddressRequest(localScript, keyPurpose, label)), timestamp).get(0);
     }
 
-    /** Recovery registers without an implicit scan; the caller performs one explicit historical rescan. */
-    public RegisteredAddress registerHistoricalAddress(P2MR.P2MRScript localScript, KeyPurpose keyPurpose, String label) {
-        return registerAddress(localScript, keyPurpose, label, "now");
-    }
-
-    private RegisteredAddress registerAddress(P2MR.P2MRScript localScript, KeyPurpose keyPurpose, String label,
-                                                Object timestamp) {
-        Objects.requireNonNull(localScript, "localScript");
-        Objects.requireNonNull(keyPurpose, "keyPurpose");
+    /**
+     * Register wallet-derived P2MR leaves as Core watch-only metadata in one batch. The watch
+     * descriptors are imported in a single importdescriptors call with the given timestamp ("now"
+     * or unix seconds), so Core performs at most one rescan per batch and owns its completion:
+     * descriptors persist before scanning, and a scan that outlives this request continues
+     * node-side, so a later refresh sees the addresses registered and the history appears once
+     * Core finishes.
+     */
+    public List<RegisteredAddress> registerAddresses(List<AddressRequest> requests, Object timestamp) {
+        Objects.requireNonNull(timestamp, "timestamp");
+        if(requests.isEmpty()) {
+            return List.of();
+        }
         JsonObject walletInfo = walletRpc.callObject("getwalletinfo");
         if(optionalBoolean(walletInfo, "private_keys_enabled", true)
                 || !optionalBoolean(walletInfo, "descriptors", false)) {
             throw new IllegalStateException("refusing to register custody metadata in a wallet that can hold private keys");
         }
-        //Re-encoding the merkle root under the connection's network proves the address network binding
-        if(!new P2MRAddress(localScript.merkleRoot()).getAddress(config.network().toNetwork()).equals(localScript.address())) {
-            throw new IllegalArgumentException("address network does not match the BTQ Core connection");
-        }
-        if(parseP2mrAddress(localScript.address()) == null) {
-            throw new IllegalArgumentException("local address is not canonical P2MR");
-        }
 
-        JsonObject leaf = new JsonObject();
-        leaf.addProperty("depth", 0);
-        leaf.addProperty("leaf_version", P2MR.LEAF_VERSION);
-        leaf.addProperty("script", HEX.formatHex(localScript.leafScript()));
-        JsonArray tree = new JsonArray();
-        tree.add(leaf);
-        boolean internal = keyPurpose == KeyPurpose.CHANGE;
-        JsonObject created = walletRpc.callObject("getnewp2mraddress", tree, label == null ? "" : label, internal);
-
-        RegisteredAddress registered = new RegisteredAddress(
-                requiredString(created, "p2mr_id", "getnewp2mraddress"),
-                requiredString(created, "address", "getnewp2mraddress"),
-                requiredString(created, "scriptPubKey", "getnewp2mraddress"),
-                requiredString(created, "merkle_root", "getnewp2mraddress"));
-        if(!P2MR_ID.matcher(registered.p2mrId()).matches()) {
-            throw new IllegalStateException("BTQ Core returned an invalid P2MR metadata id");
-        }
-        String localScriptHex = HEX.formatHex(localScript.outputScript());
-        String localRoot = HEX.formatHex(localScript.merkleRoot());
-        if(!localScript.address().equals(registered.address())
-                || !localScriptHex.equalsIgnoreCase(registered.scriptPubKey())
-                || !localRoot.equalsIgnoreCase(registered.merkleRoot())) {
-            throw new IllegalStateException("BTQ Core did not register the exact wallet P2MR commitment");
-        }
-
-        // P2MR metadata supplies the tree, but it is not descriptor-backed and
-        // by itself does not set the birth time of a blank watch-only wallet.
-        // Pair it with Core's standard addr() descriptor so block scanning,
-        // restart persistence, and upstream wallet progress remain inherited.
-        JsonObject descriptorInfo = nodeRpc.callObject("getdescriptorinfo", "addr(" + registered.address() + ")");
-        String descriptor = requiredString(descriptorInfo, "descriptor", "getdescriptorinfo");
-        if(!descriptor.startsWith("addr(" + registered.address() + ")#")
-                || optionalBoolean(descriptorInfo, "isrange", true)
-                || optionalBoolean(descriptorInfo, "issolvable", true)
-                || optionalBoolean(descriptorInfo, "hasprivatekeys", true)) {
-            throw new IllegalStateException("BTQ Core returned an unsafe watch descriptor");
-        }
-        JsonObject descriptorImport = new JsonObject();
-        descriptorImport.addProperty("desc", descriptor);
-        if(timestamp instanceof String text) {
-            descriptorImport.addProperty("timestamp", text);
-        } else if(timestamp instanceof Number number) {
-            descriptorImport.addProperty("timestamp", number);
-        } else {
-            throw new IllegalArgumentException("invalid descriptor timestamp");
-        }
-        descriptorImport.addProperty("active", false);
-        descriptorImport.addProperty("internal", internal);
-        if(keyPurpose == KeyPurpose.RECEIVE) {
-            descriptorImport.addProperty("label", label == null ? "" : label);
-        }
+        record Prepared(RegisteredAddress registered, String localScriptHex, boolean internal) {}
+        List<Prepared> prepared = new ArrayList<>(requests.size());
         JsonArray imports = new JsonArray();
-        imports.add(descriptorImport);
-        JsonArray imported = walletRpc.callArray("importdescriptors", imports);
-        if(imported.size() != 1 || !optionalBoolean(imported.get(0).getAsJsonObject(), "success", false)) {
-            throw new IllegalStateException("BTQ Core did not import the watch descriptor");
+        for(AddressRequest request : requests) {
+            P2MR.P2MRScript localScript = Objects.requireNonNull(request.script(), "script");
+            KeyPurpose keyPurpose = Objects.requireNonNull(request.keyPurpose(), "keyPurpose");
+            String label = request.label();
+            //Re-encoding the merkle root under the connection's network proves the address network binding
+            if(!new P2MRAddress(localScript.merkleRoot()).getAddress(config.network().toNetwork()).equals(localScript.address())) {
+                throw new IllegalArgumentException("address network does not match the BTQ Core connection");
+            }
+            if(parseP2mrAddress(localScript.address()) == null) {
+                throw new IllegalArgumentException("local address is not canonical P2MR");
+            }
+
+            JsonObject leaf = new JsonObject();
+            leaf.addProperty("depth", 0);
+            leaf.addProperty("leaf_version", P2MR.LEAF_VERSION);
+            leaf.addProperty("script", HEX.formatHex(localScript.leafScript()));
+            JsonArray tree = new JsonArray();
+            tree.add(leaf);
+            boolean internal = keyPurpose == KeyPurpose.CHANGE;
+            JsonObject created = walletRpc.callObject("getnewp2mraddress", tree, label == null ? "" : label, internal);
+
+            RegisteredAddress registered = new RegisteredAddress(
+                    requiredString(created, "p2mr_id", "getnewp2mraddress"),
+                    requiredString(created, "address", "getnewp2mraddress"),
+                    requiredString(created, "scriptPubKey", "getnewp2mraddress"),
+                    requiredString(created, "merkle_root", "getnewp2mraddress"));
+            if(!P2MR_ID.matcher(registered.p2mrId()).matches()) {
+                throw new IllegalStateException("BTQ Core returned an invalid P2MR metadata id");
+            }
+            String localScriptHex = HEX.formatHex(localScript.outputScript());
+            String localRoot = HEX.formatHex(localScript.merkleRoot());
+            if(!localScript.address().equals(registered.address())
+                    || !localScriptHex.equalsIgnoreCase(registered.scriptPubKey())
+                    || !localRoot.equalsIgnoreCase(registered.merkleRoot())) {
+                throw new IllegalStateException("BTQ Core did not register the exact wallet P2MR commitment");
+            }
+
+            // P2MR metadata supplies the tree, but it is not descriptor-backed and
+            // by itself does not set the birth time of a blank watch-only wallet.
+            // Pair it with Core's standard addr() descriptor so block scanning,
+            // restart persistence, and upstream wallet progress remain inherited.
+            JsonObject descriptorInfo = nodeRpc.callObject("getdescriptorinfo", "addr(" + registered.address() + ")");
+            String descriptor = requiredString(descriptorInfo, "descriptor", "getdescriptorinfo");
+            if(!descriptor.startsWith("addr(" + registered.address() + ")#")
+                    || optionalBoolean(descriptorInfo, "isrange", true)
+                    || optionalBoolean(descriptorInfo, "issolvable", true)
+                    || optionalBoolean(descriptorInfo, "hasprivatekeys", true)) {
+                throw new IllegalStateException("BTQ Core returned an unsafe watch descriptor");
+            }
+            JsonObject descriptorImport = new JsonObject();
+            descriptorImport.addProperty("desc", descriptor);
+            if(timestamp instanceof String text) {
+                descriptorImport.addProperty("timestamp", text);
+            } else if(timestamp instanceof Number number) {
+                descriptorImport.addProperty("timestamp", number);
+            } else {
+                throw new IllegalArgumentException("invalid descriptor timestamp");
+            }
+            descriptorImport.addProperty("active", false);
+            descriptorImport.addProperty("internal", internal);
+            if(keyPurpose == KeyPurpose.RECEIVE) {
+                descriptorImport.addProperty("label", label == null ? "" : label);
+            }
+            imports.add(descriptorImport);
+            prepared.add(new Prepared(registered, localScriptHex, internal));
         }
 
-        JsonObject info = walletRpc.callObject("getaddressinfo", registered.address());
-        // DescriptorScriptPubKeyMan reports imported addr() descriptors as
-        // ismine=true even in a private-key-disabled wallet. The wallet flag
-        // checked above is the custody invariant; iswatchonly is not.
-        if(!optionalBoolean(info, "ismine", false)
-                || !optionalBoolean(info, "solvable", false)
-                || !optionalBoolean(info, "isdilithium", false)
-                || requiredBoolean(info, "ischange", "getaddressinfo") != internal
-                || optionalInt(info, "witness_version", -1) != 2
-                || !localScriptHex.equalsIgnoreCase(requiredString(info, "scriptPubKey", "getaddressinfo"))) {
-            throw new IllegalStateException("BTQ Core did not classify the address as watch-only P2MR");
+        JsonArray imported;
+        try {
+            imported = walletRpc.callArray("importdescriptors", imports);
+        } catch(BtqRpcException e) {
+            //A back-dated import blocks while Core rescans; if it outlives the HTTP timeout the descriptors
+            //are already persisted and Core keeps scanning, so registration will verify on a later refresh -
+            //report the batch as in progress rather than failing the whole refresh
+            if(isTimeout(e)) {
+                log.warn("importdescriptors outlived the request timeout; BTQ Core continues scanning in the background");
+                return prepared.stream().map(Prepared::registered).toList();
+            }
+            throw e;
         }
-        return registered;
+        if(imported.size() != prepared.size()) {
+            throw new IllegalStateException("BTQ Core did not import every watch descriptor");
+        }
+        for(int i = 0; i < imported.size(); i++) {
+            if(!optionalBoolean(imported.get(i).getAsJsonObject(), "success", false)) {
+                throw new IllegalStateException("BTQ Core did not import the watch descriptor");
+            }
+        }
+
+        for(Prepared entry : prepared) {
+            JsonObject info = walletRpc.callObject("getaddressinfo", entry.registered().address());
+            // DescriptorScriptPubKeyMan reports imported addr() descriptors as
+            // ismine=true even in a private-key-disabled wallet. The wallet flag
+            // checked above is the custody invariant; iswatchonly is not.
+            if(!optionalBoolean(info, "ismine", false)
+                    || !optionalBoolean(info, "solvable", false)
+                    || !optionalBoolean(info, "isdilithium", false)
+                    || requiredBoolean(info, "ischange", "getaddressinfo") != entry.internal()
+                    || optionalInt(info, "witness_version", -1) != 2
+                    || !entry.localScriptHex().equalsIgnoreCase(requiredString(info, "scriptPubKey", "getaddressinfo"))) {
+                throw new IllegalStateException("BTQ Core did not classify the address as watch-only P2MR");
+            }
+        }
+        return prepared.stream().map(Prepared::registered).toList();
     }
 
-    /** Rescan the whole chain for watch-wallet history in bounded height ranges, so no single RPC call outlives the request timeout. */
-    public RescanResult rescanFromGenesis() {
-        requirePrivateKeysDisabled();
-        int tip = requiredInt(nodeRpc.callObject("getblockchaininfo"), "blocks", "getblockchaininfo");
-        int start = 0;
-        while(start <= tip) {
-            int stop = Math.min(start + RESCAN_CHUNK_BLOCKS - 1, tip);
-            JsonObject result = null;
-            for(int attempt = 0; attempt < 3; attempt++) {
-                JsonObject chunk = walletRpc.callObject("rescanblockchain", start, stop);
-                if(requiredInt(chunk, "start_height", "rescanblockchain") != start) {
-                    throw new IllegalStateException("BTQ Core returned an invalid rescan start height");
-                }
-                if(chunk.has("stop_height") && !chunk.get("stop_height").isJsonNull()) {
-                    result = chunk;
-                    break;
-                }
+    private static boolean isTimeout(Throwable throwable) {
+        while(throwable != null) {
+            if(throwable instanceof java.net.http.HttpTimeoutException) {
+                return true;
             }
-            if(result == null) {
-                throw new IllegalStateException("BTQ Core could not complete a stable rescan after three attempts");
-            }
-            if(requiredInt(result, "stop_height", "rescanblockchain") != stop) {
-                throw new IllegalStateException("BTQ Core returned invalid rescan heights");
-            }
-            start = stop + 1;
+            throwable = throwable.getCause();
         }
-        return new RescanResult(0, tip);
+        return false;
     }
+
 
     public List<WatchedUtxo> listUtxos(int minimumConfirmations) {
         if(minimumConfirmations < 0) {
@@ -538,9 +558,6 @@ public final class BtqWatchOnlyCore implements AutoCloseable {
     }
 
     public record RegisteredAddress(String p2mrId, String address, String scriptPubKey, String merkleRoot) {
-    }
-
-    public record RescanResult(int startHeight, int stopHeight) {
     }
 
     public record WatchedUtxo(String txid, int vout, String address, String scriptPubKey,

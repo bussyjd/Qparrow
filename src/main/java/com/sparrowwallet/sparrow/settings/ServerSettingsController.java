@@ -675,8 +675,13 @@ public class ServerSettingsController extends SettingsDetailController {
         torService.start();
     }
 
+    private Service<BtqWatchOnlyCore.NodeStatus> btqTestService;
+
     private void testBtqConnection() {
-        Service<BtqWatchOnlyCore.NodeStatus> btqTestService = new Service<>() {
+        if(btqTestService != null && btqTestService.isRunning()) {
+            btqTestService.cancel();
+        }
+        btqTestService = new Service<>() {
             @Override
             protected Task<BtqWatchOnlyCore.NodeStatus> createTask() {
                 return new Task<>() {
