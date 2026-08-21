@@ -1,5 +1,5 @@
-> **This is [Qparrow](README-QPARROW.md)** — a forward-only Bitcoin Quantum (BTQ) custody wallet forked from Sparrow.
-> The Qparrow app lives entirely in the additive `qparrow-app` module; the text below is upstream Sparrow's own README, kept verbatim so upstream merges stay clean. See **[README-QPARROW.md](README-QPARROW.md)**.
+> **This fork adds native Bitcoin Quantum (BTQ) support to Sparrow Wallet** — post-quantum ML-DSA-44 / P2MR wallets served by a BTQ Core node, as a gated wallet type inside Sparrow itself. See **[README-QPARROW.md](README-QPARROW.md)** for the overview, architecture, and status.
+> The text below is upstream Sparrow's own README, kept verbatim so upstream merges stay clean.
 
 # Sparrow Bitcoin Wallet
 

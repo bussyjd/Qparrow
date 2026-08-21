@@ -1,8 +1,9 @@
 Qparrow
 Copyright 2026 Bitcoin Quantum contributors
 
-Qparrow is derived from Sparrow Wallet, Drongo, and Lark, each distributed
-under the Apache License, Version 2.0. The original projects are available at:
+Qparrow is Sparrow Wallet with native Bitcoin Quantum support, derived from
+Sparrow Wallet, Drongo, and Lark, each distributed under the Apache License,
+Version 2.0. The original projects are available at:
 
   https://github.com/sparrowwallet/sparrow
   https://github.com/sparrowwallet/drongo
