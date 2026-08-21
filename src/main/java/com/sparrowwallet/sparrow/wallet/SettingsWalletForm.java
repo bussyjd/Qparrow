@@ -1,6 +1,7 @@
 package com.sparrowwallet.sparrow.wallet;
 
 import com.sparrowwallet.drongo.policy.Policy;
+import com.sparrowwallet.drongo.wallet.BtqMasterSecret;
 import com.sparrowwallet.drongo.wallet.DeterministicSeed;
 import com.sparrowwallet.drongo.wallet.Keystore;
 import com.sparrowwallet.drongo.wallet.MasterPrivateExtendedKey;
@@ -241,6 +242,15 @@ public class SettingsWalletForm extends WalletForm {
                     MasterPrivateExtendedKey changedMpek = changedKeystore.getMasterPrivateExtendedKey().copy();
                     changedMpek.setId(originalKeystore.getMasterPrivateExtendedKey().getId());
                     originalKeystore.setMasterPrivateExtendedKey(changedMpek);
+                    changedKeystores.add(originalKeystore);
+                }
+            }
+
+            if(originalKeystore.hasBtqMasterSecret() && changedKeystore.hasBtqMasterSecret()) {
+                if(!Objects.equals(originalKeystore.getBtqMasterSecret().getEncryptedData(), changedKeystore.getBtqMasterSecret().getEncryptedData())) {
+                    BtqMasterSecret changedBtqSecret = changedKeystore.getBtqMasterSecret().copy();
+                    changedBtqSecret.setId(originalKeystore.getBtqMasterSecret().getId());
+                    originalKeystore.setBtqMasterSecret(changedBtqSecret);
                     changedKeystores.add(originalKeystore);
                 }
             }

@@ -28,6 +28,7 @@ public class KeystoreMapper implements RowMapper<Keystore> {
         keystore.setExternalPaymentCode(rs.getString("keystore.externalPaymentCode") == null ? null : PaymentCode.fromString(rs.getString("keystore.externalPaymentCode")));
         keystore.setSilentPaymentScanAddress(rs.getBytes("keystore.silentPaymentScanAddress") == null ? null : SilentPaymentScanAddress.fromBytes(rs.getBytes("keystore.silentPaymentScanAddress")));
         keystore.setDeviceRegistration(rs.getBytes("keystore.deviceRegistration"));
+        keystore.decodeBtqPublicKeyCache(rs.getBytes("keystore.btqPublicKeyCache"));
 
         if(rs.getBytes("masterPrivateExtendedKey.privateKey") != null) {
             MasterPrivateExtendedKey masterPrivateExtendedKey = new MasterPrivateExtendedKey(rs.getBytes("masterPrivateExtendedKey.privateKey"), rs.getBytes("masterPrivateExtendedKey.chainCode"));
@@ -41,6 +42,20 @@ public class KeystoreMapper implements RowMapper<Keystore> {
             MasterPrivateExtendedKey masterPrivateExtendedKey = new MasterPrivateExtendedKey(encryptedData);
             masterPrivateExtendedKey.setId(rs.getLong("masterPrivateExtendedKey.id"));
             keystore.setMasterPrivateExtendedKey(masterPrivateExtendedKey);
+        }
+
+        if(rs.getBytes("btqMasterSecret.secret") != null) {
+            BtqMasterSecret btqMasterSecret = new BtqMasterSecret(rs.getBytes("btqMasterSecret.secret"));
+            btqMasterSecret.setId(rs.getLong("btqMasterSecret.id"));
+            keystore.setBtqMasterSecret(btqMasterSecret);
+        } else if(rs.getBytes("btqMasterSecret.encryptedBytes") != null) {
+            EncryptedData encryptedData = new EncryptedData(rs.getBytes("btqMasterSecret.initialisationVector"),
+                    rs.getBytes("btqMasterSecret.encryptedBytes"), rs.getBytes("btqMasterSecret.keySalt"),
+                    EncryptionType.Deriver.values()[rs.getInt("btqMasterSecret.deriver")],
+                    EncryptionType.Crypter.values()[rs.getInt("btqMasterSecret.crypter")]);
+            BtqMasterSecret btqMasterSecret = new BtqMasterSecret(encryptedData);
+            btqMasterSecret.setId(rs.getLong("btqMasterSecret.id"));
+            keystore.setBtqMasterSecret(btqMasterSecret);
         }
 
         if(rs.getString("seed.mnemonicString") != null) {

@@ -1,5 +1,4 @@
-// Modified for Qparrow: node-backed Bitcoin Quantum wallet support.
-package com.sparrowwallet.sparrow.btq;
+package com.sparrowwallet.sparrow.net.btq;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;

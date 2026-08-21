@@ -603,7 +603,13 @@ public class HeadersController extends TransactionFormController implements Init
 
     private void updateSize() {
         size.setText(headersForm.getTransaction().getSize() + " B");
-        virtualSize.setText(String.format("%.2f", headersForm.getTransaction().getVirtualSize()) + " vB");
+        virtualSize.setText(String.format("%.2f", getTransactionVirtualSize()) + " vB");
+    }
+
+    private double getTransactionVirtualSize() {
+        //Policy-aware virtual size (BTQ uses a witness scale factor of 16)
+        Wallet wallet = headersForm.getSigningWallet() != null ? headersForm.getSigningWallet() : headersForm.getWallet();
+        return wallet != null ? wallet.getVirtualSize(headersForm.getTransaction()) : headersForm.getTransaction().getVirtualSize();
     }
 
     private Long calculateFee(Map<Sha256Hash, BlockTransaction> inputTransactions) {
@@ -640,7 +646,7 @@ public class HeadersController extends TransactionFormController implements Init
 
     private void updateFee(Long feeAmt) {
         fee.setValue(feeAmt);
-        double feeRateAmt = feeAmt.doubleValue() / headersForm.getTransaction().getVirtualSize();
+        double feeRateAmt = feeAmt.doubleValue() / getTransactionVirtualSize();
         feeRate.setText(String.format("%.2f", feeRateAmt) + " sats/vB" + (headersForm.isTransactionFinalized() ? "" : " (non-final)"));
     }
 
@@ -882,7 +888,7 @@ public class HeadersController extends TransactionFormController implements Init
     }
 
     private void initializeSignButton(Wallet signingWallet) {
-        Optional<Keystore> softwareKeystore = signingWallet.getKeystores().stream().filter(keystore -> keystore.getSource().equals(KeystoreSource.SW_SEED)).findAny();
+        Optional<Keystore> softwareKeystore = signingWallet.getKeystores().stream().filter(keystore -> keystore.getSource().equals(KeystoreSource.SW_SEED) || keystore.getSource().equals(KeystoreSource.SW_BTQ_SEED)).findAny();
         Optional<Keystore> usbKeystore = signingWallet.getKeystores().stream().filter(keystore -> keystore.getSource().equals(KeystoreSource.HW_USB) || keystore.getSource().equals(KeystoreSource.SW_WATCH)).findAny();
         Optional<Keystore> bip47Keystore = signingWallet.getKeystores().stream().filter(keystore -> keystore.getSource().equals(KeystoreSource.SW_PAYMENT_CODE)).findAny();
         Optional<Keystore> cardKeystore = signingWallet.getKeystores().stream().filter(keystore -> keystore.getWalletModel().isCard()).findAny();
@@ -1166,6 +1172,14 @@ public class HeadersController extends TransactionFormController implements Init
                 EventManager.get().post(new TransactionOutputsChangedEvent(headersForm.getTransaction()));
             }
             unencryptedWallet.sign(signingNodes);
+            if(headersForm.getSigningWallet().getPolicyType() == PolicyType.SINGLE_MLDSA) {
+                //Signing may have derived new BTQ public keys; merge them back so addresses remain derivable while locked
+                boolean grew = headersForm.getSigningWallet().getKeystores().get(0).mergeBtqPublicKeyCache(unencryptedWallet.getKeystores().get(0));
+                if(grew) {
+                    String walletId = headersForm.getAvailableWallets().get(headersForm.getSigningWallet()).getWalletId(headersForm.getSigningWallet());
+                    EventManager.get().post(new KeystoreEncryptionChangedEvent(headersForm.getSigningWallet(), null, walletId, List.of(headersForm.getSigningWallet().getKeystores().get(0))));
+                }
+            }
             updateSignedKeystores(headersForm.getSigningWallet());
         } catch(Exception e) {
             log.warn("Failed to Sign", e);
@@ -1245,6 +1259,39 @@ public class HeadersController extends TransactionFormController implements Init
         }
     }
 
+    private void broadcastBtqTransaction() {
+        javafx.concurrent.Service<com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore.BroadcastResult> btqBroadcastService = new javafx.concurrent.Service<>() {
+            @Override
+            protected javafx.concurrent.Task<com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore.BroadcastResult> createTask() {
+                return new javafx.concurrent.Task<>() {
+                    @Override
+                    protected com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore.BroadcastResult call() {
+                        try(com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore core = com.sparrowwallet.sparrow.net.btq.BtqConnection.openWatchOnlyCore(
+                                com.sparrowwallet.sparrow.io.Config.get(), com.sparrowwallet.drongo.Network.get())) {
+                            com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore.FinalizedTransaction finalized = core.verifyFinalized(headersForm.getTransaction());
+                            return core.broadcast(finalized);
+                        }
+                    }
+                };
+            }
+        };
+        btqBroadcastService.setOnSucceeded(workerStateEvent -> {
+            log.info("Broadcast BTQ transaction " + btqBroadcastService.getValue().txid());
+            broadcastProgressBar.setProgress(1.0);
+            Wallet signingWallet = headersForm.getSigningWallet();
+            if(signingWallet != null) {
+                //sendrawtransaction has accepted the transaction into the node mempool; refresh from Core so the send is reflected
+                EventManager.get().post(new BtqTransactionBroadcastEvent(signingWallet, headersForm.getTransaction().getTxId()));
+            }
+        });
+        btqBroadcastService.setOnFailed(workerStateEvent -> {
+            broadcastButton.setDisable(false);
+            log.error("Error broadcasting BTQ transaction", workerStateEvent.getSource().getException());
+            AppServices.showErrorDialog("Error broadcasting transaction", workerStateEvent.getSource().getException().getMessage());
+        });
+        btqBroadcastService.start();
+    }
+
     public void broadcastTransaction(ActionEvent event) {
         broadcastButton.setDisable(true);
         if(headersForm.getPsbt() != null) {
@@ -1255,7 +1302,7 @@ public class HeadersController extends TransactionFormController implements Init
         }
 
         if(fee.getValue() > 0) {
-            double feeRateAmt = fee.getValue() / headersForm.getTransaction().getVirtualSize();
+            double feeRateAmt = fee.getValue() / getTransactionVirtualSize();
             if(feeRateAmt > AppServices.getLongFeeRatesRange().getLast() || (AppServices.getTargetBlockFeeRates() != null && feeRateAmt > AppServices.getDefaultFeeRate() * FEE_MULTIPLE_LIMIT)) {
                 Optional<ButtonType> optType = AppServices.showWarningDialog("Very high fee rate!",
                         "This transaction pays a very high fee rate of " + String.format("%.0f", feeRateAmt) + " sats/vB.\n\nBroadcast this transaction?", ButtonType.YES, ButtonType.NO);
@@ -1264,6 +1311,12 @@ public class HeadersController extends TransactionFormController implements Init
                     return;
                 }
             }
+        }
+
+        //Bitcoin Quantum transactions broadcast through BTQ Core (testmempoolaccept dry run first), not Electrum
+        if(headersForm.getSigningWallet() != null && headersForm.getSigningWallet().getPolicyType() == com.sparrowwallet.drongo.policy.PolicyType.SINGLE_MLDSA) {
+            broadcastBtqTransaction();
+            return;
         }
 
         if(headersForm.getSigningWallet() instanceof FinalizingPSBTWallet) {

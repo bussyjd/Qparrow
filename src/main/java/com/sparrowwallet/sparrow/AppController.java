@@ -1,4 +1,3 @@
-// Modified for Qparrow: independent application naming.
 package com.sparrowwallet.sparrow;
 
 import com.beust.jcommander.JCommander;
@@ -276,7 +275,7 @@ public class AppController implements Initializable {
             closeTab.setDisable(tabs.getTabs().isEmpty());
             if(tabs.getTabs().isEmpty()) {
                 Stage tabStage = (Stage) tabs.getScene().getWindow();
-                tabStage.setTitle(SparrowWallet.APP_NAME);
+                tabStage.setTitle("Sparrow");
                 saveTransaction.setVisible(true);
                 saveTransaction.setDisable(true);
                 exportWallet.setDisable(true);
@@ -1128,7 +1127,10 @@ public class AppController implements Initializable {
             WalletNameDialog.NameAndBirthDate nameAndBirthDate = optNameAndBirthDate.get();
             File walletFile = Storage.getWalletFile(nameAndBirthDate.getName());
             Storage storage = new Storage(walletFile);
-            Wallet wallet = new Wallet(nameAndBirthDate.getName(), PolicyType.SINGLE_HD, ScriptType.P2WPKH, nameAndBirthDate.getBirthDate());
+            //A BTQ Core connection creates a Bitcoin Quantum custody wallet
+            Wallet wallet = Config.get().getServerType() == ServerType.BTQ_CORE
+                    ? new Wallet(nameAndBirthDate.getName(), PolicyType.SINGLE_MLDSA, ScriptType.P2MR, nameAndBirthDate.getBirthDate())
+                    : new Wallet(nameAndBirthDate.getName(), PolicyType.SINGLE_HD, ScriptType.P2WPKH, nameAndBirthDate.getBirthDate());
             addWalletTabOrWindow(storage, wallet, false);
         }
     }
@@ -1277,7 +1279,7 @@ public class AppController implements Initializable {
 
             for(Wallet wallet : wallets) {
                 List<WalletTabData> walletTabData = getOpenWalletTabData();
-                List<ExtendedKey> xpubs = wallet.getKeystores().stream().map(Keystore::getExtendedPublicKey).collect(Collectors.toList());
+                List<ExtendedKey> xpubs = wallet.getKeystores().stream().map(Keystore::getExtendedPublicKey).filter(Objects::nonNull).collect(Collectors.toList());
                 Optional<WalletForm> optNewWalletForm = walletTabData.stream()
                         .map(WalletTabData::getWalletForm)
                         .filter(wf -> wf.getSettingsWalletForm() != null && wf.getSettingsWalletForm().getWallet().getPolicyType() == PolicyType.MULTI_HD &&
@@ -2892,7 +2894,7 @@ public class AppController implements Initializable {
                         .graphic(new DialogImage(DialogImage.Type.SPARROW))
                         .hideAfter(Duration.seconds(15))
                         .position(Pos.TOP_RIGHT)
-                        .threshold(5, Notifications.create().title(SparrowWallet.APP_NAME).text("Multiple new wallet transactions").graphic(new DialogImage(DialogImage.Type.SPARROW)))
+                        .threshold(5, Notifications.create().title("Sparrow").text("Multiple new wallet transactions").graphic(new DialogImage(DialogImage.Type.SPARROW)))
                         .onAction(e -> selectTab(event.getWallet()));
 
                 //If controlsfx can't find our window, we must set the window ourselves (unfortunately notification is then shown within this window)
@@ -3155,6 +3157,14 @@ public class AppController implements Initializable {
             AppServices.showErrorDialog("Error importing Bitcoin Core descriptor wallet",
                     "The connected node is pruned at " + event.getPruneDateAsString() + ", but the wallet birthday for " + event.getWallet().getFullDisplayName() + " is set to " + event.getScanDateAsString() + ".");
         }
+    }
+
+    @Subscribe
+    public void cormorantImportStatus(CormorantImportStatusEvent event) {
+        String walletNames = event.getWallets().stream().map(Wallet::getFullDisplayName).collect(Collectors.joining(", "));
+        AppServices.showErrorDialog("Error importing Bitcoin Core descriptors",
+                "Bitcoin Core did not import " + (walletNames.isEmpty() ? "one or more descriptors" : "the descriptors for " + walletNames) + ":\n\n" + event.getErrorMessage() + "\n\n" +
+                        "Transactions and balances may be incomplete until the import succeeds.");
     }
 
     @Subscribe

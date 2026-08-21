@@ -1,4 +1,3 @@
-// Modified for Qparrow: independent application naming.
 package com.sparrowwallet.sparrow.net;
 
 import com.google.common.eventbus.Subscribe;
@@ -20,7 +19,6 @@ import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.BlockSummary;
 import com.sparrowwallet.sparrow.EventManager;
-import com.sparrowwallet.sparrow.SparrowWallet;
 import com.sparrowwallet.sparrow.event.*;
 import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.io.Server;
@@ -202,7 +200,7 @@ public class ElectrumServer {
     }
 
     public List<String> getServerVersion() throws ServerException {
-        return electrumServerRpc.getServerVersion(getTransport(), SparrowWallet.APP_NAME, SUPPORTED_VERSIONS);
+        return electrumServerRpc.getServerVersion(getTransport(), "Sparrow", SUPPORTED_VERSIONS);
     }
 
     public ServerFeatures getServerFeatures() throws ServerException {
@@ -1152,7 +1150,12 @@ public class ElectrumServer {
         Double minFeeRateBtcKb = electrumServerRpc.getMinimumRelayFee(getTransport());
         if(minFeeRateBtcKb != null) {
             long minFeeRateSatsKb = (long)(minFeeRateBtcKb * Transaction.SATOSHIS_PER_BITCOIN);
-            return minFeeRateSatsKb / 1000d;
+            double minFeeRate = minFeeRateSatsKb / 1000d;
+            if(minFeeRate >= 0d && minFeeRate <= AppServices.getLongFeeRatesRange().getLast()) {
+                return minFeeRate;
+            }
+
+            log.warn("Server returned an out of range minimum relay fee of " + minFeeRateBtcKb + " BTC/kB, using default");
         }
 
         return Transaction.DEFAULT_MIN_RELAY_FEE;
@@ -1621,8 +1624,20 @@ public class ElectrumServer {
         //batch and needs its spent-input nodes identified.
         Set<Sha256Hash> alreadyInWallet = new HashSet<>();
         for(SilentPaymentsTx entry : entries) {
-            Sha256Hash txid = Sha256Hash.wrap(entry.tx_hash);
-            tweakMap.putIfAbsent(txid, Utils.hexToBytes(entry.tweak_key));
+            Sha256Hash txid;
+            byte[] tweakKey;
+            try {
+                txid = Sha256Hash.wrap(entry.tx_hash);
+                tweakKey = Utils.hexToBytes(entry.tweak_key);
+                if(tweakKey.length != 33) {
+                    throw new ProtocolException("Tweak key must be 33 bytes, not " + tweakKey.length);
+                }
+            } catch(NullPointerException | ProtocolException e) {
+                log.warn("Skipping malformed silent payments entry " + entry + ": " + e);
+                continue;
+            }
+
+            tweakMap.putIfAbsent(txid, tweakKey);
             BlockTransaction existing = wallet.getWalletTransaction(txid);
             if(existing != null) {
                 transactionMap.put(txid, existing);
@@ -1693,7 +1708,7 @@ public class ElectrumServer {
                         }
                     }
                 }
-            } catch(InvalidSilentPaymentException e) {
+            } catch(InvalidSilentPaymentException | IllegalArgumentException e) {
                 log.warn("Invalid silent payment tweak for tx " + txid + " — skipping", e);
             }
         }

@@ -1,76 +1,81 @@
-# Qparrow milestone verification
+# Verifying the BTQ integration
 
-Verification date: 2026-08-18
+Three layers of evidence: the drongo unit suite (golden vectors and
+round-trips), a live regtest integration test against a real BTQ Core node,
+and the recorded end-to-end testnet gate.
 
-## Pinned inputs
-
-- Qparrow implementation commit: `bfbbb393`
-- Sparrow starting point: `b99b880c`
-- BTQ Core production baseline: `v0.4.4-testnet`, `e2d19e06`
-- Exact Bitcoin Core 26.0 ancestor: `44d8b13`
-- BTQ test-only follow-up: `5a7edd6b2` updates `feature_p2mr.py` to assert the current P2MR-only Dilithium error; it changes no production code
-- Java: Eclipse Temurin 25
-- BTQ build: descriptors/SQLite enabled, legacy BDB disabled
-
-## Qparrow and inherited Java surface
-
-Command:
+## Unit suite (drongo signing engine)
 
 ```bash
-BTQ_CORE_BIN=/absolute/path/to/btqd ./gradlew test --no-daemon
+./gradlew :drongo:test
 ```
 
-Result:
+The BTQ-specific tests and what they pin:
 
-| Suite | Tests | Skipped | Failures | Errors |
-|---|---:|---:|---:|---:|
-| Qparrow/Sparrow root | 152 | 0 | 0 | 0 |
-| Drongo | 438 | 0 | 0 | 0 |
-| Lark | 1 | 0 | 0 | 0 |
-| Total | 591 | 0 | 0 | 0 |
+| Area | Tests | Evidence |
+|---|---|---|
+| Derivation | `btq/BtqDerivationTest` | Byte-exact HKDF-SHA512 golden vectors; network binding; locked derivation returns null rather than throwing (`wallet/BtqLockedDerivationTest`) |
+| P2MR construction | `btq/P2MRTest`, `address/P2MRAddressTest`, `protocol/P2MRScriptEqualityTest` | Leaf/TapLeaf-root/control-block/Bech32m vectors from an independent Python reference of the TapLeaf+Bech32m algorithm |
+| PSBT fields | `psbt/P2MRPsbtInputTest` | Byte-identical round-trip of input fields `0x19`/`0x1a`/`0x1b` through parse/serialize/combine |
+| Signing | `btq/BtqPsbtSignerTest` | Sighash checked byte-for-byte against an independent BIP341 golden vector; 1312-byte leaf script round-trip; full sign → verify → finalize |
+| Wallet model | `wallet/BtqKeystoreTest`, `BtqWalletTest`, `BtqWalletSigningTest`, `BtqWalletSendTest`, `BtqKeyCacheTest` | Keystore lifecycle (encrypt/decrypt, cache warm and merge), address/output-script derivation, UI-path `Wallet.sign` dispatch, local scale-16 transaction construction and fee economics |
 
-The root total includes 26 Qparrow BTQ tests. The real-process test starts `btqd` on regtest and proves descriptor-wallet creation, P2MR address/script binding, quantum-only balance, BTQ PSBT signing/finalization, raw transaction signing, the 2,421-byte ML-DSA signature item, the 1,312-byte public key leaf, rejection after changing a byte inside the ML-DSA signature, successful mempool dry-run, broadcast, mining, and confirmation.
+The full upstream drongo and Sparrow suites must stay green alongside —
+every BTQ branch is gated on `SINGLE_MLDSA`/`SW_BTQ_SEED`/`BTQ_CORE`, and
+the Bitcoin test surface is the regression check on that gating.
 
-## BTQ Core C++ surface
+## Live regtest cross-check
 
-The selected Dilithium, P2MR, network-policy, wallet, change, descriptor, and PSBT Boost suites ran 139 cases with no errors.
-
-The relevant functional matrix ran 16 scripts. Twelve descriptor/consensus scripts passed. Four legacy-wallet variants were skipped because BDB was not compiled; these paths are not part of Qparrow's descriptor-only custody boundary. The test runner's aggregate result was `ALL ✓ Passed`.
-
-Covered scripts:
-
-```text
-feature_dilithium_activation.py
-feature_p2mr.py
-feature_p2mr_rpc.py
-wallet_all_types_simulation.py
-wallet_bip360_send_paths.py
-wallet_cross_chain_addresses.py
-wallet_dilithium_change.py
-wallet_dilithium_encrypted_restart_descriptors.py
-wallet_dilithium_psbt.py
-wallet_dilithium_psbt_multisig.py
-wallet_dilithium_send.py
-wallet_dilithium_signmessage.py
+```bash
+BTQ_CORE_BIN=/absolute/path/to/btq-core/src/btqd \
+  ./gradlew :drongo:test --tests com.sparrowwallet.drongo.btq.BtqCoreRegtestIT
 ```
 
-Skipped legacy-BDB variants:
+`BtqCoreRegtestIT` is skipped, not failed, when `BTQ_CORE_BIN` is unset, so
+a plain test run never touches a node; CI must run it explicitly. It starts
+a private regtest `btqd` (fresh datadir, unique ports), derives a P2MR
+address in the JVM, funds it, has Core build a funded PSBT with the explicit
+4402 WU input weight, signs and finalizes with `BtqPsbtSigner`, and asserts
+`testmempoolaccept` allows the transaction, the locally computed fee matches
+Core's, and the transaction confirms. It does not enable `acceptnonstdtxn`:
+the spend must pass BTQ Core's default mempool policy.
 
-```text
-wallet_dilithium_encrypted_restart.py
-wallet_dilithium_hd_restore.py
-wallet_dilithium_import_restart.py
-wallet_dilithium_legacy_spend.py
-```
+## Address byte-compatibility with BTQ Core
 
-## Artifact gate
+Every address registration is itself a cross-check, on every wallet, at
+runtime: Sparrow derives the address locally from the master secret, hands
+Core only the public leaf tree via `getnewp2mraddress`, and hard-fails
+unless Core's returned address, `scriptPubKey`, and merkle root are
+byte-identical to the local ones (`BtqWatchOnlyCore.registerAddress`). The
+subsequent `getaddressinfo` must report the exact script with
+`isdilithium=true` and `witness_version=2`. Any divergence between the Java
+derivation and Core's P2MR encoding aborts before an address is ever
+displayed or funded.
 
-`./gradlew jpackageImage` completed successfully. The packaged launcher reports `Qparrow 0.1.0-dev`, opens the BTQ-only desktop, and contains the corrected `com.bitcoinquantum.merged.module` runtime options.
+## Testnet gate (2026-08-21)
 
-The local macOS distribution is `build/jpackage/Qparrow-0.1.0.zip` (about 90 MB) with SHA-256:
+The full native UI flow was completed end-to-end on the public BTQ testnet:
+create wallet → import master secret → balance/history from Core → build
+send → finalize → sign (ML-DSA-44 in the Sparrow UI) → broadcast → relayed
+peer-to-peer → mined with 2+ confirmations.
 
-```text
-0ff28fcd8bd34e0432f889c93ca59159cdf696f277862f4d4d2503a70eeb3934
-```
+Gate transaction
+`76e2f14ca68e5dc82e77a0f3f9262379cdfefc82f8b2110b48c6539f7e276dc3`, mined in
+block 303704
+(`0000000005c786c4398406753e1dcefaab12d9e3e4568ee1d115a5f63a8c2b4e`):
 
-The zip is an unsigned development artifact. Public releases still require project-owned artwork, release signing/notarization, reproducibility checks, and independent security review.
+- one P2MR input with the three-item witness (signature, leaf script,
+  control block);
+- 0.05 tBTQ to a `tbtq1z…` recipient plus 0.04984041 tBTQ change, fee
+  15,959 sats;
+- weight 5940 WU → virtual size 372 vB at witness scale 16 — the node-side
+  math matches drongo's exactly, and the wallet balance moved by precisely
+  the fee.
+
+## Scope
+
+Passing these gates establishes a working development custody path, not a
+production security certification. A public release additionally requires
+independent review of the derivation scheme, the FIPS 204 provider use, the
+PSBT and sighash paths, and the UI authorization boundary, plus reproducible
+signed artifacts and platform-level secret-handling testing.

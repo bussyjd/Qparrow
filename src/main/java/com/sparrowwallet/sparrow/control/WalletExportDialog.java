@@ -8,6 +8,7 @@ import com.sparrowwallet.sparrow.EventManager;
 import com.sparrowwallet.sparrow.event.WalletExportEvent;
 import com.sparrowwallet.sparrow.wallet.WalletForm;
 import com.sparrowwallet.sparrow.io.*;
+import javafx.geometry.Insets;
 import javafx.scene.control.*;
 import javafx.scene.layout.AnchorPane;
 import javafx.scene.layout.StackPane;
@@ -51,20 +52,29 @@ public class WalletExportDialog extends Dialog<Wallet> {
                     new Descriptor(), new JadeMultisig(), new PassportMultisig(), new SpecterDesktop(), new BlueWalletMultisig(), new SpecterDIY(), new Sparrow(), new WalletLabels(allWalletForms), new WalletTransactions(selectedWalletForm));
         } else if(wallet.getPolicyType() == PolicyType.SINGLE_SP) {
             exporters = List.of(new Descriptor(), new Sparrow(), new WalletLabels(allWalletForms), new WalletTransactions(selectedWalletForm));
+        } else if(wallet.getPolicyType() == PolicyType.SINGLE_MLDSA) {
+            //No exporters support a BTQ wallet yet
+            exporters = List.of();
         } else {
             throw new UnsupportedOperationException("Cannot export wallet with policy type " + wallet.getPolicyType());
         }
 
-        Accordion exportAccordion = new Accordion();
-        for(WalletExport exporter : exporters) {
-            if(!exporter.isDeprecated() || Config.get().isShowDeprecatedImportExport()) {
-                FileWalletExportPane exportPane = new FileWalletExportPane(wallet, exporter);
-                exportAccordion.getPanes().add(exportPane);
+        if(exporters.isEmpty()) {
+            Label unsupportedLabel = new Label("Export is not supported for a Bitcoin Quantum wallet yet.");
+            unsupportedLabel.setPadding(new Insets(20));
+            scrollPane.setContent(unsupportedLabel);
+        } else {
+            Accordion exportAccordion = new Accordion();
+            for(WalletExport exporter : exporters) {
+                if(!exporter.isDeprecated() || Config.get().isShowDeprecatedImportExport()) {
+                    FileWalletExportPane exportPane = new FileWalletExportPane(wallet, exporter);
+                    exportAccordion.getPanes().add(exportPane);
+                }
             }
-        }
 
-        exportAccordion.getPanes().sort(Comparator.comparing(o -> ((TitledDescriptionPane) o).getTitle()));
-        scrollPane.setContent(exportAccordion);
+            exportAccordion.getPanes().sort(Comparator.comparing(o -> ((TitledDescriptionPane) o).getTitle()));
+            scrollPane.setContent(exportAccordion);
+        }
 
         final ButtonType cancelButtonType = new javafx.scene.control.ButtonType("Cancel", ButtonBar.ButtonData.CANCEL_CLOSE);
         dialogPane.getButtonTypes().addAll(cancelButtonType);

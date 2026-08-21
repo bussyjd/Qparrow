@@ -4,6 +4,7 @@ import com.github.arteam.simplejsonrpc.client.exception.JsonRpcException;
 import com.google.common.base.Throwables;
 import com.google.common.eventbus.Subscribe;
 import com.google.common.net.HostAndPort;
+import com.google.common.net.InetAddresses;
 import com.sparrowwallet.drongo.Network;
 import com.sparrowwallet.drongo.OsType;
 import com.sparrowwallet.drongo.policy.PolicyType;
@@ -21,7 +22,11 @@ import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.io.Server;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.net.*;
+import com.sparrowwallet.sparrow.net.btq.BtqConnection;
+import com.sparrowwallet.sparrow.net.btq.BtqWatchOnlyCore;
 import javafx.application.Platform;
+import javafx.concurrent.Service;
+import javafx.concurrent.Task;
 import javafx.beans.value.ChangeListener;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -126,6 +131,48 @@ public class ServerSettingsController extends SettingsDetailController {
     private TextField coreProxyPort;
 
     @FXML
+    private Form btqCoreForm;
+
+    @FXML
+    private TextField btqCoreHost;
+
+    @FXML
+    private TextField btqCorePort;
+
+    @FXML
+    private ToggleGroup btqCoreAuthToggleGroup;
+
+    @FXML
+    private Field btqCoreDataDirField;
+
+    @FXML
+    private TextField btqCoreDataDir;
+
+    @FXML
+    private Button btqCoreDataDirSelect;
+
+    @FXML
+    private Field btqCoreUserPassField;
+
+    @FXML
+    private TextField btqCoreUser;
+
+    @FXML
+    private PasswordField btqCorePass;
+
+    @FXML
+    private TextField btqCoreWallet;
+
+    @FXML
+    private UnlabeledToggleSwitch btqCoreUseProxy;
+
+    @FXML
+    private TextField btqCoreProxyHost;
+
+    @FXML
+    private TextField btqCoreProxyPort;
+
+    @FXML
     private Form electrumForm;
 
     @FXML
@@ -174,6 +221,8 @@ public class ServerSettingsController extends SettingsDetailController {
 
     private Boolean useProxyOriginal;
 
+    private boolean coreServerWarningShown;
+
     @Override
     public void initializeView(Config config) {
         EventManager.get().register(this);
@@ -182,12 +231,14 @@ public class ServerSettingsController extends SettingsDetailController {
             if(connectionService != null && connectionService.isRunning()) {
                 connectionService.cancel();
             }
+            Platform.runLater(() -> showRemoteCoreServerWarning(config));
         });
 
         Platform.runLater(this::setupValidation);
 
         publicElectrumForm.managedProperty().bind(publicElectrumForm.visibleProperty());
         coreForm.managedProperty().bind(coreForm.visibleProperty());
+        btqCoreForm.managedProperty().bind(btqCoreForm.visibleProperty());
         electrumForm.managedProperty().bind(electrumForm.visibleProperty());
         serverTypeToggleGroup.selectedToggleProperty().addListener((observable, oldValue, newValue) -> {
             if(serverTypeToggleGroup.getSelectedToggle() != null) {
@@ -195,6 +246,7 @@ public class ServerSettingsController extends SettingsDetailController {
                 ServerType serverType = (ServerType)newValue.getUserData();
                 publicElectrumForm.setVisible(serverType == ServerType.PUBLIC_ELECTRUM_SERVER);
                 coreForm.setVisible(serverType == ServerType.BITCOIN_CORE);
+                btqCoreForm.setVisible(serverType == ServerType.BTQ_CORE);
                 electrumForm.setVisible(serverType == ServerType.ELECTRUM_SERVER);
                 config.setServerType(serverType);
                 testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.QUESTION_CIRCLE, ""));
@@ -231,6 +283,8 @@ public class ServerSettingsController extends SettingsDetailController {
         proxyPort.setTextFormatter(new TextFieldValidator(TextFieldValidator.ValidationModus.MAX_INTEGERS, 5).getFormatter());
         coreProxyPort.setTextFormatter(new TextFieldValidator(TextFieldValidator.ValidationModus.MAX_INTEGERS, 5).getFormatter());
         publicProxyPort.setTextFormatter(new TextFieldValidator(TextFieldValidator.ValidationModus.MAX_INTEGERS, 5).getFormatter());
+        btqCorePort.setTextFormatter(new TextFieldValidator(TextFieldValidator.ValidationModus.MAX_INTEGERS, 5).getFormatter());
+        btqCoreProxyPort.setTextFormatter(new TextFieldValidator(TextFieldValidator.ValidationModus.MAX_INTEGERS, 5).getFormatter());
 
         coreHost.textProperty().addListener(getBitcoinCoreListener(config));
         corePort.textProperty().addListener(getBitcoinCoreListener(config));
@@ -241,6 +295,18 @@ public class ServerSettingsController extends SettingsDetailController {
         coreUseProxy.selectedProperty().bindBidirectional(useProxy.selectedProperty());
         coreProxyHost.textProperty().bindBidirectional(proxyHost.textProperty());
         coreProxyPort.textProperty().bindBidirectional(proxyPort.textProperty());
+
+        btqCoreHost.textProperty().addListener(getBtqCoreListener(config));
+        btqCorePort.textProperty().addListener(getBtqCoreListener(config));
+
+        btqCoreUser.textProperty().addListener(getBtqCoreAuthListener(config));
+        btqCorePass.textProperty().addListener(getBtqCoreAuthListener(config));
+
+        btqCoreWallet.textProperty().addListener((observable, oldValue, newValue) -> config.setBtqCoreWallet(newValue));
+
+        btqCoreUseProxy.selectedProperty().bindBidirectional(useProxy.selectedProperty());
+        btqCoreProxyHost.textProperty().bindBidirectional(proxyHost.textProperty());
+        btqCoreProxyPort.textProperty().bindBidirectional(proxyPort.textProperty());
 
         electrumHost.textProperty().addListener(getElectrumServerListener(config));
         electrumPort.textProperty().addListener(getElectrumServerListener(config));
@@ -279,6 +345,40 @@ public class ServerSettingsController extends SettingsDetailController {
             File dataDir = directorChooser.showDialog(window);
             if(dataDir != null) {
                 coreDataDir.setText(dataDir.getAbsolutePath());
+            }
+        });
+
+        btqCorePort.setPromptText("e.g. " + Network.get().getDefaultPort());
+        btqCoreDataDirField.managedProperty().bind(btqCoreDataDirField.visibleProperty());
+        btqCoreUserPassField.managedProperty().bind(btqCoreUserPassField.visibleProperty());
+        btqCoreUserPassField.visibleProperty().bind(btqCoreDataDirField.visibleProperty().not());
+        btqCoreAuthToggleGroup.selectedToggleProperty().addListener((observable, oldValue, newValue) -> {
+            if(btqCoreAuthToggleGroup.getSelectedToggle() != null) {
+                CoreAuthType btqAuthType = (CoreAuthType)newValue.getUserData();
+                btqCoreDataDirField.setVisible(btqAuthType == CoreAuthType.COOKIE);
+                config.setBtqCoreAuthType(btqAuthType);
+            } else if(oldValue != null) {
+                oldValue.setSelected(true);
+            }
+        });
+        CoreAuthType btqCoreAuthType = config.getBtqCoreAuthType() != null ? config.getBtqCoreAuthType() : CoreAuthType.COOKIE;
+        btqCoreAuthToggleGroup.selectToggle(btqCoreAuthToggleGroup.getToggles().stream().filter(toggle -> toggle.getUserData() == btqCoreAuthType).findFirst().orElse(null));
+
+        btqCoreDataDir.textProperty().addListener((observable, oldValue, newValue) -> {
+            File dataDir = getDirectory(newValue);
+            config.setBtqCoreDataDir(dataDir);
+        });
+
+        btqCoreDataDirSelect.setOnAction(event -> {
+            Stage window = new Stage();
+
+            DirectoryChooser directorChooser = new DirectoryChooser();
+            directorChooser.setTitle("Select Bitcoin Quantum Core Data Directory");
+            directorChooser.setInitialDirectory(config.getBtqCoreDataDir() != null ? config.getBtqCoreDataDir() : new File(System.getProperty("user.home")));
+
+            File dataDir = directorChooser.showDialog(window);
+            if(dataDir != null) {
+                btqCoreDataDir.setText(dataDir.getAbsolutePath());
             }
         });
 
@@ -403,7 +503,7 @@ public class ServerSettingsController extends SettingsDetailController {
         });
 
         useProxy.selectedProperty().addListener((observable, oldValue, newValue) -> {
-            config.setUseProxy(newValue);
+            config.setUseProxy(newValue && config.getProxyServer() != null && !config.getProxyServer().isBlank());
             proxyHost.setText(proxyHost.getText() + " ");
             proxyHost.setText(proxyHost.getText().trim());
             proxyHost.setDisable(!newValue);
@@ -422,10 +522,13 @@ public class ServerSettingsController extends SettingsDetailController {
         testConnection.setVisible(!isConnected);
         setTestResultsFont();
         testConnection.setOnAction(event -> {
+            showRemoteCoreServerWarning(config);
             testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.ELLIPSIS_H, null));
             testResults.setText("Connecting " + (config.hasServer() ? "to " + config.getServer().getUrl() : "") + "...");
 
-            if(Config.get().requiresInternalTor() && Tor.getDefault() == null) {
+            if(Config.get().getServerType() == ServerType.BTQ_CORE) {
+                testBtqConnection();
+            } else if(Config.get().requiresInternalTor() && Tor.getDefault() == null) {
                 startTor();
             } else {
                 startElectrumConnection();
@@ -479,6 +582,32 @@ public class ServerSettingsController extends SettingsDetailController {
                 corePass.setText(userPass[1]);
             }
         }
+
+        Server btqCoreServer = config.getBtqCoreServer();
+        if(btqCoreServer != null) {
+            HostAndPort hostAndPort = btqCoreServer.getHostAndPort();
+            btqCoreHost.setText(hostAndPort.getHost());
+            if(hostAndPort.hasPort()) {
+                btqCorePort.setText(Integer.toString(hostAndPort.getPort()));
+            }
+        } else {
+            btqCoreHost.setText("127.0.0.1");
+            btqCorePort.setText(String.valueOf(Network.get().getDefaultPort()));
+        }
+
+        btqCoreDataDir.setText(config.getBtqCoreDataDir() != null ? config.getBtqCoreDataDir().getAbsolutePath() : getDefaultCoreDataDir().getAbsolutePath());
+
+        if(config.getBtqCoreAuth() != null) {
+            String[] userPass = config.getBtqCoreAuth().split(":");
+            if(userPass.length > 0) {
+                btqCoreUser.setText(userPass[0]);
+            }
+            if(userPass.length > 1) {
+                btqCorePass.setText(userPass[1]);
+            }
+        }
+
+        btqCoreWallet.setText(config.getBtqCoreWallet());
 
         Server electrumServer = config.getElectrumServer();
         if(electrumServer != null) {
@@ -544,6 +673,46 @@ public class ServerSettingsController extends SettingsDetailController {
         });
 
         torService.start();
+    }
+
+    private Service<BtqWatchOnlyCore.NodeStatus> btqTestService;
+
+    private void testBtqConnection() {
+        if(btqTestService != null && btqTestService.isRunning()) {
+            btqTestService.cancel();
+        }
+        btqTestService = new Service<>() {
+            @Override
+            protected Task<BtqWatchOnlyCore.NodeStatus> createTask() {
+                return new Task<>() {
+                    @Override
+                    protected BtqWatchOnlyCore.NodeStatus call() {
+                        try(BtqWatchOnlyCore core = BtqConnection.openWatchOnlyCore(Config.get(), Network.get())) {
+                            return core.verifyNode();
+                        }
+                    }
+                };
+            }
+        };
+        btqTestService.setOnSucceeded(workerStateEvent -> {
+            BtqWatchOnlyCore.NodeStatus status = btqTestService.getValue();
+            testResults.setText("Connected to " + status.subversion() + " on chain " + status.network().toString().toLowerCase(Locale.ROOT) + " at height " + status.blocks());
+            if(status.initialBlockDownload()) {
+                testResults.appendText("\nThe connection to the BTQ Core node was successful, but it is still syncing (" + status.blocks() + " of " + status.headers() + " blocks) and cannot be used yet.");
+                testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.QUESTION_CIRCLE, null));
+            } else {
+                testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.CHECK_CIRCLE, "success"));
+            }
+        });
+        btqTestService.setOnFailed(workerStateEvent -> {
+            Throwable exception = workerStateEvent.getSource().getException();
+            log.error("BTQ Core connection error", exception);
+            String reason = exception.getMessage() != null ? exception.getMessage() :
+                    (exception.getCause() != null ? exception.getCause().getMessage() : exception.toString());
+            testResults.setText("Could not connect:\n\n" + reason);
+            testConnection.setGraphic(getGlyph(FontAwesome5.Glyph.EXCLAMATION_CIRCLE, "failure"));
+        });
+        btqTestService.start();
     }
 
     private void startElectrumConnection() {
@@ -634,6 +803,18 @@ public class ServerSettingsController extends SettingsDetailController {
         coreUseProxy.setDisable(!editable);
         coreProxyHost.setDisable(!editable);
         coreProxyPort.setDisable(!editable);
+
+        btqCoreHost.setDisable(!editable);
+        btqCorePort.setDisable(!editable);
+        btqCoreAuthToggleGroup.getToggles().forEach(toggle -> ((ToggleButton)toggle).setDisable(!editable));
+        btqCoreDataDir.setDisable(!editable);
+        btqCoreDataDirSelect.setDisable(!editable);
+        btqCoreUser.setDisable(!editable);
+        btqCorePass.setDisable(!editable);
+        btqCoreWallet.setDisable(!editable);
+        btqCoreUseProxy.setDisable(!editable);
+        btqCoreProxyHost.setDisable(!editable);
+        btqCoreProxyPort.setDisable(!editable);
 
         electrumHost.setDisable(!editable);
         electrumPort.setDisable(!editable);
@@ -739,6 +920,26 @@ public class ServerSettingsController extends SettingsDetailController {
                 (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Core pass required", coreAuthToggleGroup.getSelectedToggle().getUserData() == CoreAuthType.USERPASS && newValue.isEmpty())
         ));
 
+        validationSupport.registerValidator(btqCoreHost, Validator.combine(
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Invalid Core host", getHost(newValue) == null)
+        ));
+
+        validationSupport.registerValidator(btqCorePort, Validator.combine(
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Invalid Core port", !newValue.isEmpty() && !isValidPort(Integer.parseInt(newValue)))
+        ));
+
+        validationSupport.registerValidator(btqCoreDataDir, Validator.combine(
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Core Data Dir required", btqCoreAuthToggleGroup.getSelectedToggle().getUserData() == CoreAuthType.COOKIE && (newValue.isEmpty() || getDirectory(newValue) == null))
+        ));
+
+        validationSupport.registerValidator(btqCoreUser, Validator.combine(
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Core user required", btqCoreAuthToggleGroup.getSelectedToggle().getUserData() == CoreAuthType.USERPASS && newValue.isEmpty())
+        ));
+
+        validationSupport.registerValidator(btqCorePass, Validator.combine(
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Core pass required", btqCoreAuthToggleGroup.getSelectedToggle().getUserData() == CoreAuthType.USERPASS && newValue.isEmpty())
+        ));
+
         validationSupport.registerValidator(electrumHost, Validator.combine(
                 (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Invalid Electrum host", getHost(newValue) == null)
         ));
@@ -748,7 +949,7 @@ public class ServerSettingsController extends SettingsDetailController {
         ));
 
         validationSupport.registerValidator(proxyHost, Validator.combine(
-                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Proxy host required", useProxy.isSelected() && newValue.isEmpty()),
+                (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Proxy host required", useProxy.isSelected() && newValue.isBlank()),
                 (Control c, String newValue) -> ValidationResult.fromErrorIf( c, "Invalid host name", getHost(newValue) == null)
         ));
 
@@ -814,10 +1015,94 @@ public class ServerSettingsController extends SettingsDetailController {
         }
     }
 
+    private void showRemoteCoreServerWarning(Config config) {
+        Server coreServer = config.getCoreServer();
+        if(!coreServerWarningShown && config.getServerType() == ServerType.BITCOIN_CORE && isRemoteNode(coreServer)) {
+            coreServerWarningShown = true;
+
+            //A host that is not an IP literal is not resolved here, so it can only be reported as unconfirmed
+            String location = InetAddresses.isInetAddress(coreServer.getHost()) ? " is not on" : " could not be confirmed to be on";
+            StringBuilder warning = new StringBuilder("Bitcoin Core at " + coreServer.getHostAndPort() + location + " this computer or your local network.\n");
+            if(AppServices.isUsingProxy()) {
+                String proxy = config.isUseProxy() ? "configured proxy" : "internal Tor proxy";
+                warning.append("\nConnections to Bitcoin Core are made directly, and the " + proxy + " is only used for onion addresses. ");
+                warning.append("Your IP address will be visible to the node.\n");
+            }
+            if(coreServer.getProtocol() == Protocol.HTTP) {
+                warning.append("\nThe RPC credentials and wallet descriptors sent to it are unencrypted, and can be read by anyone on the network path.\n");
+            } else if(Storage.getCertificateFile(coreServer.getHost()) == null) {
+                warning.append("\nThe certificate presented by the node on the first connection will be trusted and required on all connections thereafter.\n");
+            }
+            warning.append("\nConnecting to the Bitcoin Core RPC interface over an untrusted network is not recommended by either Sparrow or Bitcoin Core. ");
+            warning.append("Consider using a node on this computer or your local network, connecting over a Tor onion address, or tunnelling to it over a VPN or SSH.");
+
+            AppServices.showWarningDialog("Remote Bitcoin Core node", warning.toString());
+        }
+    }
+
+    private boolean isRemoteNode(Server coreServer) {
+        if(coreServer == null || coreServer.isOnionAddress()) {
+            return false;
+        }
+
+        String host = coreServer.getHost();
+        if(IpAddressMatcher.isLocalNetworkName(host)) {
+            return false;
+        }
+
+        if(!InetAddresses.isInetAddress(host)) {
+            //Resolving a hostname here would block the user interface thread, and an unresolved host cannot be shown to be local
+            return true;
+        }
+
+        try {
+            return !IpAddressMatcher.isLocalNetworkAddress(host);
+        } catch(IllegalArgumentException e) {
+            return true;
+        }
+    }
+
     @NotNull
     private ChangeListener<String> getBitcoinAuthListener(Config config) {
         return (observable, oldValue, newValue) -> {
             config.setCoreAuth(coreUser.getText() + ":" + corePass.getText());
+        };
+    }
+
+    @NotNull
+    private ChangeListener<String> getBtqCoreListener(Config config) {
+        return (observable, oldValue, newValue) -> {
+            Protocol protocol = Protocol.getProtocol(newValue);
+            if(protocol != null && Protocol.getProtocol(oldValue) == null) {
+                HostAndPort hostAndPort = protocol.getServerHostAndPort(newValue);
+                if(!hostAndPort.getHost().isEmpty()) {
+                    btqCoreHost.setText(hostAndPort.getHost());
+                    btqCorePort.setText(hostAndPort.hasPort() ? String.valueOf(hostAndPort.getPort()) : "");
+                }
+                return;
+            }
+
+            setBtqCoreServerInConfig(config);
+        };
+    }
+
+    private void setBtqCoreServerInConfig(Config config) {
+        String hostAsString = getHost(btqCoreHost.getText());
+        Integer portAsInteger = getPort(btqCorePort.getText());
+        if(hostAsString != null && !hostAsString.isEmpty() && portAsInteger != null && isValidPort(portAsInteger)) {
+            Protocol protocol = portAsInteger == Protocol.HTTPS.getDefaultPort() ? Protocol.HTTPS : Protocol.HTTP;
+            config.setBtqCoreServer(new Server(protocol.toUrlString(hostAsString, portAsInteger)));
+        } else if(hostAsString != null && !hostAsString.isEmpty()) {
+            config.setBtqCoreServer(new Server(Protocol.HTTP.toUrlString(hostAsString)));
+        } else {
+            config.setBtqCoreServer(null);
+        }
+    }
+
+    @NotNull
+    private ChangeListener<String> getBtqCoreAuthListener(Config config) {
+        return (observable, oldValue, newValue) -> {
+            config.setBtqCoreAuth(btqCoreUser.getText() + ":" + btqCorePass.getText());
         };
     }
 
@@ -874,14 +1159,22 @@ public class ServerSettingsController extends SettingsDetailController {
                 return;
             }
 
-            String hostAsString = getHost(proxyHost.getText());
-            Integer portAsInteger = getPort(proxyPort.getText());
-            if(hostAsString != null && portAsInteger != null && isValidPort(portAsInteger)) {
-                config.setProxyServer(HostAndPort.fromParts(hostAsString, portAsInteger).toString());
-            } else if(hostAsString != null) {
-                config.setProxyServer(HostAndPort.fromHost(hostAsString).toString());
-            }
+            setProxyConfig(config);
         };
+    }
+
+    private void setProxyConfig(Config config) {
+        String hostAsString = getHost(proxyHost.getText());
+        Integer portAsInteger = getPort(proxyPort.getText());
+        String proxyServer = null;
+        if(hostAsString != null && !hostAsString.isBlank() && portAsInteger != null && isValidPort(portAsInteger)) {
+            proxyServer = HostAndPort.fromParts(hostAsString, portAsInteger).toString();
+        } else if(hostAsString != null && !hostAsString.isBlank()) {
+            proxyServer = HostAndPort.fromHost(hostAsString).toString();
+        }
+
+        config.setProxyServer(proxyServer);
+        config.setUseProxy(useProxy.isSelected() && proxyServer != null);
     }
 
     private Protocol getProtocol() {
@@ -890,7 +1183,7 @@ public class ServerSettingsController extends SettingsDetailController {
 
     private String getHost(String text) {
         try {
-            return HostAndPort.fromHost(text).getHost();
+            return HostAndPort.fromHost(text.trim()).getHost();
         } catch(IllegalArgumentException e) {
             return null;
         }

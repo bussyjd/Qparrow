@@ -164,6 +164,10 @@ public class AddressesController extends WalletFormController implements Initial
                 CsvWriter writer = new CsvWriter(outputStream, ',', StandardCharsets.UTF_8);
                 writer.writeRecord(new String[] {"Index", "Payment Address", "Derivation", "Label"});
                 for(WalletNode indexNode : purposeNode.getChildren()) {
+                    if(indexNode.getAddress() == null) {
+                        //Locked BTQ wallet, uncached gap-window node: the address is only derivable after unlock
+                        continue;
+                    }
                     writer.write(Integer.toString(indexNode.getIndex()));
                     writer.write(indexNode.getAddress().toString());
                     writer.write(getDerivationPath(indexNode));
@@ -173,7 +177,7 @@ public class AddressesController extends WalletFormController implements Initial
                     writer.endRecord();
                 }
                 writer.close();
-            } catch(IOException e) {
+            } catch(Exception e) {
                 log.error("Error exporting addresses as CSV", e);
                 AppServices.showErrorDialog("Error exporting addresses as CSV", e.getMessage());
             }

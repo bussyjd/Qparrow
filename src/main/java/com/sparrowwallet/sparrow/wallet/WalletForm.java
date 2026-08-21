@@ -22,8 +22,11 @@ import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleObjectProperty;
+import javafx.concurrent.ScheduledService;
+import javafx.concurrent.Task;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
+import javafx.util.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,6 +56,9 @@ public class WalletForm {
     private final ObjectProperty<WalletTransaction> createdWalletTransactionProperty = new SimpleObjectProperty<>(null);
 
     private ElectrumServer.TransactionMempoolService transactionMempoolService;
+
+    private com.sparrowwallet.sparrow.net.btq.BtqCoreHistory.BtqHistoryService btqHistoryService;
+    private ScheduledService<Void> btqPollService;
 
     private boolean spScanInProgress;
     private boolean spSubscriptionHeld;
@@ -156,6 +162,13 @@ public class WalletForm {
 
     public void refreshHistory(Integer blockHeight, List<Wallet> filterToWallets, Set<WalletNode> nodes) {
         Wallet previousWallet = wallet.copy();
+        //BTQ wallets poll BTQ Core directly and do not depend on the Electrum connection state
+        if(wallet.getPolicyType() == PolicyType.SINGLE_MLDSA) {
+            if(wallet.isValid()) {
+                refreshHistoryBtq(previousWallet, blockHeight);
+            }
+            return;
+        }
         if(wallet.isValid() && AppServices.isConnected()) {
             if(log.isDebugEnabled()) {
                 log.debug(nodes == null ? wallet.getFullName() + " refreshing full wallet history" : wallet.getFullName() + " requesting node wallet history for " + nodeRangesToString(nodes));
@@ -167,6 +180,24 @@ public class WalletForm {
                 refreshHistoryHD(previousWallet, blockHeight, filterToWallets, nodes);
             }
         }
+    }
+
+    private void refreshHistoryBtq(Wallet previousWallet, Integer blockHeight) {
+        //Single-flight: open, poll and broadcast triggers can coincide, and concurrent refreshes would mutate the same wallet
+        if(btqHistoryService != null && btqHistoryService.isRunning()) {
+            return;
+        }
+        btqHistoryService = new com.sparrowwallet.sparrow.net.btq.BtqCoreHistory.BtqHistoryService(wallet);
+        btqHistoryService.setOnSucceeded(workerStateEvent -> {
+            EventManager.get().post(new WalletHistoryFinishedEvent(wallet));
+            updateWallets(blockHeight, previousWallet);
+        });
+        btqHistoryService.setOnFailed(workerStateEvent -> {
+            handleHistoryFailed(previousWallet, workerStateEvent.getSource().getException());
+        });
+
+        EventManager.get().post(new WalletHistoryStartedEvent(wallet, null));
+        btqHistoryService.start();
     }
 
     private void refreshHistoryHD(Wallet previousWallet, Integer blockHeight, List<Wallet> filterToWallets, Set<WalletNode> nodes) {
@@ -316,7 +347,8 @@ public class WalletForm {
             currentWallet.setBirthHeight(min.getAsInt());
         }
 
-        if(blockHeight != null) {
+        if(blockHeight != null && currentWallet.getPolicyType() != PolicyType.SINGLE_MLDSA) {
+            //BTQ wallets take their tip height from Core inside the history task; the app-wide height is Electrum-fed
             currentWallet.setStoredBlockHeight(blockHeight);
         }
 
@@ -562,6 +594,44 @@ public class WalletForm {
     }
 
     @Subscribe
+    public void walletOpened(WalletOpenedEvent event) {
+        //BTQ wallets have no Electrum ConnectionEvent to trigger the initial load; refresh from Core on open
+        if(event.getWallet() == wallet && wallet.getPolicyType() == PolicyType.SINGLE_MLDSA) {
+            refreshHistory(AppServices.getCurrentBlockHeight());
+            startBtqPolling();
+        }
+    }
+
+    //BTQ wallets have no Electrum server notifications; poll Core periodically so new blocks and deposits
+    //appear without a manual refresh. The single-flight guard in refreshHistoryBtq absorbs overlapping polls.
+    private void startBtqPolling() {
+        if(btqPollService == null) {
+            btqPollService = new ScheduledService<>() {
+                @Override
+                protected Task<Void> createTask() {
+                    return new Task<>() {
+                        @Override
+                        protected Void call() {
+                            Platform.runLater(() -> refreshHistory(AppServices.getCurrentBlockHeight()));
+                            return null;
+                        }
+                    };
+                }
+            };
+            btqPollService.setDelay(Duration.seconds(30));
+            btqPollService.setPeriod(Duration.seconds(30));
+            btqPollService.start();
+        }
+    }
+
+    @Subscribe
+    public void btqTransactionBroadcast(BtqTransactionBroadcastEvent event) {
+        if(event.getWallet() == wallet && wallet.getPolicyType() == PolicyType.SINGLE_MLDSA) {
+            refreshHistory(AppServices.getCurrentBlockHeight());
+        }
+    }
+
+    @Subscribe
     public void walletNodeHistoryChanged(WalletNodeHistoryChangedEvent event) {
         if(wallet.isValid() && !wallet.isNested()) {
             if(transactionMempoolService != null) {
@@ -763,6 +833,10 @@ public class WalletForm {
                 EventManager.get().unregister(this);
                 for(WalletForm nestedWalletForm : nestedWalletForms) {
                     EventManager.get().unregister(nestedWalletForm);
+                }
+                if(btqPollService != null) {
+                    btqPollService.cancel();
+                    btqPollService = null;
                 }
                 if(wallet.isValid()) {
                     AppServices.clearTransactionHistoryCache(wallet);
